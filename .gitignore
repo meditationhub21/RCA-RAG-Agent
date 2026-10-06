@@ -5,4 +5,3 @@ target/
 .rca-index-pgvector/
 .rca-index-ollama/
 .rca-index-gemma4-nomic-v1.5/
-models/*.gguf
