@@ -10,7 +10,7 @@ spring:
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
       chat:
-        model: ${OLLAMA_CHAT_MODEL:rca-gemma4-31b}
+        model: ${OLLAMA_CHAT_MODEL:rca-qwen3.5-4b}
         format: json
         keep-alive: 10m
         temperature: 0.1

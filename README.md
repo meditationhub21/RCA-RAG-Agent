@@ -28,7 +28,7 @@ mvn spring-boot:run
 The application requires Neo4j, PostgreSQL with pgvector, and a local Ollama server. The Compose Ollama service mounts `./models` read-only at `/models`. Copy your GGUF files into the `models` directory at the project root with these exact filenames:
 
 ```text
-models/gemma-4-31B_q4_0-it.gguf
+models/Qwen3.5-4B-Q4_K_M.gguf
 models/nomic-embed-text-v1.5.Q4_0.gguf
 ```
 
@@ -42,7 +42,7 @@ Import the GGUF files into Ollama once. Ollama stores the imported model data in
 
 ```powershell
 docker compose exec ollama ollama --version
-docker compose exec ollama ollama create rca-gemma4-31b -f /models/Modelfile.gemma4
+docker compose exec ollama ollama create rca-qwen3.5-4b -f /models/Modelfile.qwen3.5-4b
 docker compose exec ollama ollama create rca-nomic-embed-v1.5 -f /models/Modelfile.nomic-embed-v1.5
 docker compose exec ollama ollama list
 docker compose ps
@@ -51,7 +51,7 @@ docker compose ps
 The defaults are Neo4j at `bolt://localhost:7687` (`neo4j/change-this-password`), PostgreSQL at `localhost:5432` (`rca/rca`), and Ollama at `http://localhost:11434`. Verify the GGUF imports with a direct chat request and an embedding request before starting the app. GGUF support depends on the Ollama build supporting each model architecture; the files are not included in this repository.
 
 ```powershell
-docker compose exec ollama ollama run rca-gemma4-31b "Reply with READY."
+docker compose exec ollama ollama run rca-qwen3.5-4b "Reply with READY."
 $probe = @{ model = 'rca-nomic-embed-v1.5'; input = 'RCA embedding compatibility probe' } | ConvertTo-Json
 $embedding = Invoke-RestMethod -Method Post -Uri 'http://localhost:11434/api/embed' -ContentType 'application/json' -Body $probe
 $embedding.embeddings[0].Count
@@ -63,13 +63,13 @@ Graph persistence includes repository/file/type/method relationships and `RCA_CA
 
 ### Required local LLM and vector database
 
-The app uses Spring AI `ChatClient` with the imported local `rca-gemma4-31b` GGUF for RCA synthesis and `rca-nomic-embed-v1.5` for local embeddings stored in mandatory PostgreSQL/pgvector. No OpenAI API key or paid inference credits are required. The models are configurable with `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBEDDING_MODEL`, and `OLLAMA_BASE_URL`. Nomic v1.5 uses `search_document: ` for indexed text and `search_query: ` for RCA retrieval queries. Its configured output dimension is 768; set `RCA_VECTOR_EMBEDDING_DIMENSIONS` to the selected model's output dimension when changing the embedding model. The prompt context is bounded and chat generation is capped at 512 tokens for this local setup.
+The app uses Spring AI `ChatClient` with the imported local `rca-qwen3.5-4b` GGUF for RCA synthesis and `rca-nomic-embed-v1.5` for local embeddings stored in mandatory PostgreSQL/pgvector. No OpenAI API key or paid inference credits are required. The models are configurable with `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBEDDING_MODEL`, and `OLLAMA_BASE_URL`. Nomic v1.5 uses `search_document: ` for indexed text and `search_query: ` for RCA retrieval queries. Its configured output dimension is 768; set `RCA_VECTOR_EMBEDDING_DIMENSIONS` to the selected model's output dimension when changing the embedding model. The prompt context is bounded and chat generation is capped at 512 tokens for this local setup.
 
 ```powershell
 mvn spring-boot:run
 ```
 
-Startup requires PostgreSQL/pgvector. Repository syncs that need embeddings require the configured Nomic model, and RCA requests require the configured Gemma model. Gemma 4 31B Q4_0 is much larger than the previous Qwen 1.7B model. CPU-only inference can be extremely slow and requires substantial RAM; GPU acceleration requires enough available VRAM and working Docker GPU passthrough. Review the actual GGUF file size and Docker resource allocation before loading it.
+Startup requires PostgreSQL/pgvector. Repository syncs that need embeddings require the configured Nomic model, and RCA requests require the configured Qwen model. Qwen3.5 4B Q4_K_M is the default chat model for local RCA synthesis. CPU-only inference is supported; Intel GPU acceleration depends on Ollama Vulkan device detection and, when running Ollama in Docker, GPU passthrough. The Intel AI Boost NPU is not used by Ollama.
 
 The application creates the pgvector extension, an embedding-model-specific vector table, and an HNSW index on startup. Repository sync embeds changed files and methods in batches; RCA caches the repeated query embedding and stores incidents for later retrieval. This model pairing uses `.rca-index-gemma4-nomic-v1.5/` so the first sync rebuilds vectors using the new Nomic GGUF instead of treating the old model's manifest as current. The app retains the latest repository snapshot in process memory, so sync the repository again after restarting the app and after source edits.
 
