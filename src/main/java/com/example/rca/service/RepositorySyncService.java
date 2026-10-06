@@ -1,0 +1,100 @@
+package com.example.rca.service;
+
+import com.example.rca.model.ApiModels.SyncResponse;
+import com.example.rca.model.CodeModels;
+import com.example.rca.parser.JavaAstParser;
+import tools.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.util.*;
+import java.util.stream.Stream;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class RepositorySyncService {
+    private static final Logger log=LoggerFactory.getLogger(RepositorySyncService.class);
+    private final JavaAstParser parser; private final GraphStore graph; private final VectorStore vectors; private final ObjectMapper mapper; private final BuildDependencyScanner dependencyScanner;
+    private final String allowedRoot; private final String indexDirectory;
+    private final Map<String,CodeModels.RepositorySnapshot> snapshots=new ConcurrentHashMap<>();
+    @Autowired
+    public RepositorySyncService(JavaAstParser parser,GraphStore graph,VectorStore vectors,ObjectMapper mapper,BuildDependencyScanner dependencyScanner,
+            @Value("${rca.repositories.allowed-root:}") String allowedRoot,@Value("${rca.index-directory:.rca-index-gemma4-nomic-v1.5}") String indexDirectory) {
+        this.parser=parser;this.graph=graph;this.vectors=vectors;this.mapper=mapper;this.dependencyScanner=dependencyScanner;this.allowedRoot=allowedRoot;this.indexDirectory=indexDirectory;
+    }
+    public RepositorySyncService(JavaAstParser parser,GraphStore graph,VectorStore vectors,ObjectMapper mapper,String allowedRoot,String indexDirectory) {
+        this(parser,graph,vectors,mapper,new BuildDependencyScanner(),allowedRoot,indexDirectory);
+    }
+    public SyncResponse sync(String name,String sourceDirectory) {
+        if(name==null||name.isBlank()) throw new IllegalArgumentException("repositoryName is required");
+        long syncStarted = System.nanoTime();
+        try {
+            log.info("Repository sync started: repository={} sourceDirectory={}",name,sourceDirectory);
+            Path root=Path.of(Objects.requireNonNull(sourceDirectory,"sourceDirectory is required")).toRealPath();
+            if(!Files.isDirectory(root)) throw new IllegalArgumentException("sourceDirectory must be a directory");
+            if(allowedRoot!=null&&!allowedRoot.isBlank()&&!root.startsWith(Path.of(allowedRoot).toRealPath())) throw new IllegalArgumentException("sourceDirectory is outside REPOSITORY_ALLOWED_ROOT");
+            Path manifestDirectory=Path.of(indexDirectory);
+            if(!manifestDirectory.isAbsolute()) manifestDirectory=Path.of(System.getProperty("user.dir")).resolve(manifestDirectory);
+            Path manifest=manifestDirectory.resolve(name.replaceAll("[^A-Za-z0-9._-]","_")+".json");
+            log.debug("Using repository hash manifest: repository={} manifest={}",name,manifest);
+            var prior=readIndex(manifest); var docs=new ArrayList<CodeModels.SourceDocument>(); var types=new ArrayList<CodeModels.TypeInfo>(); var hashes=new TreeMap<String,String>();
+            long scanStarted = System.nanoTime();
+            try(Stream<Path> paths=Files.walk(root)) {
+                paths.filter(Files::isRegularFile).filter(p->!excluded(root.relativize(p))).filter(RepositorySyncService::indexable).forEach(p->{
+                    try {
+                        String rel=root.relativize(p).toString().replace('\\','/'); String content=Files.readString(p); String hash=sha256(content); hashes.put(rel,hash);
+                        String kind=p.toString().endsWith(".java")?"JAVA":"CONFIG"; docs.add(new CodeModels.SourceDocument(rel,content,hash,kind));
+                        if(kind.equals("JAVA")) types.addAll(parser.parse(p,rel,content));
+                    } catch(IOException e){throw new UncheckedIOException(e);}
+                });
+            }
+            log.info("Repository scan complete: repository={} filesScanned={} javaTypes={} elapsedMs={}",name,docs.size(),types.size(),
+                    (System.nanoTime() - scanStarted) / 1_000_000);
+            int changed=(int)hashes.entrySet().stream().filter(e->!Objects.equals(prior.get(e.getKey()),e.getValue())).count()+ (int)prior.keySet().stream().filter(k->!hashes.containsKey(k)).count();
+            String commit=git(root,"rev-parse","HEAD").orElse(null);
+            if(commit==null) log.warn("No Git HEAD found for repository {}; commit and Git change metadata will be unavailable",name);
+            else log.info("Repository Git HEAD found: repository={} commit={}",name,commit);
+            var dependencies=dependencyScanner.scan(docs);
+            log.info("Build dependency inventory created: repository={} declaredDependencies={}",name,dependencies.size());
+            var snapshot=new CodeModels.RepositorySnapshot(name,root.toString(),commit,docs,types,dependencies);
+            snapshots.put(name,snapshot);
+            long graphStarted = System.nanoTime();
+            int graphNodes=graph.upsert(snapshot);
+            log.info("Repository graph write timing: repository={} nodes={} elapsedMs={}", name, graphNodes,
+                    (System.nanoTime() - graphStarted) / 1_000_000);
+            var vectorEntries=new ArrayList<VectorStore.Entry>();
+            for(var e:prior.entrySet()) if(!Objects.equals(hashes.get(e.getKey()),e.getValue())) vectors.deletePrefix(name+":"+e.getKey());
+            for(var d:docs) if(!Objects.equals(prior.get(d.path()),d.sha256()))
+                vectorEntries.add(new VectorStore.Entry(name+":"+d.path(),d.path()+"\n"+d.content()));
+            for(var t:types) if(!Objects.equals(prior.get(t.file()),hashes.get(t.file()))) for(var m:t.methods())
+                vectorEntries.add(new VectorStore.Entry(name+":"+t.file()+"#"+t.name()+"."+m.name(),"Repository "+name+" class "+t.name()+" method "+m.name()+"\n"+m.body()));
+            log.info("Repository vector indexing started: repository={} vectorEntries={} changedFiles={}",name,vectorEntries.size(),changed);
+            long vectorStarted = System.nanoTime();
+            vectors.upsertAll(vectorEntries);
+            log.info("Repository vector indexing complete: repository={} vectorEntries={} elapsedMs={}", name,
+                    vectorEntries.size(), (System.nanoTime() - vectorStarted) / 1_000_000);
+            int embeddings=vectorEntries.size();
+            Files.createDirectories(manifest.getParent());
+            mapper.writeValue(manifest.toFile(),hashes);
+            var response=new SyncResponse(name,"SYNCED",commit,docs.size(),changed,graphNodes,embeddings,
+                    dependencies.stream().map(CodeModels.DependencyInfo::coordinate).distinct().toList());
+            log.info("Repository sync completed: repository={} status={} filesChanged={} graphNodesUpdated={} vectorEntriesUpdated={} commit={}",
+                    name,response.status(),response.filesChanged(),response.graphNodesUpdated(),response.embeddingsUpdated(),commit);
+            log.info("Repository sync total time: repository={} elapsedMs={}", name, (System.nanoTime() - syncStarted) / 1_000_000);
+            return response;
+        } catch(IllegalArgumentException e){log.warn("Repository sync rejected: repository={} reason={}",name,e.getMessage());throw e;}
+        catch(Exception e){log.error("Repository sync failed: repository={} sourceDirectory={}",name,sourceDirectory,e);throw new IllegalStateException("Repository sync failed: "+e.getMessage(),e);}
+    }
+    public Optional<CodeModels.RepositorySnapshot> latest(String name) { return Optional.ofNullable(snapshots.get(name)); }
+    private Map<String,String> readIndex(Path path){try { if(Files.exists(path)) return mapper.readValue(path.toFile(),mapper.getTypeFactory().constructMapType(TreeMap.class,String.class,String.class)); }catch(Exception ignored){} return Map.of();}
+    private static boolean indexable(Path p){String s=p.toString().replace('\\','/');return s.endsWith(".java")||s.endsWith(".yml")||s.endsWith(".yaml")||s.endsWith(".properties")||s.endsWith(".toml")||s.endsWith("pom.xml")||s.endsWith("build.gradle")||s.endsWith("build.gradle.kts");}
+    private static boolean excluded(Path p){for(Path part:p) if(Set.of(".git","target","build","node_modules",".idea").contains(part.toString())) return true;return false;}
+    private static String sha256(String s){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
+    static Optional<String> git(Path root,String... args){try{var cmd=new ArrayList<String>();cmd.add("git");cmd.add("-C");cmd.add(root.toString());cmd.addAll(List.of(args));var p=new ProcessBuilder(cmd).redirectErrorStream(true).start();String s=new String(p.getInputStream().readAllBytes()).trim();return p.waitFor()==0&&!s.isBlank()?Optional.of(s):Optional.empty();}catch(Exception e){return Optional.empty();}}
+}

@@ -1,0 +1,4 @@
+FROM /models/gemma-4-31B_q4_0-it.gguf
+PARAMETER num_ctx 4096
+PARAMETER num_predict 512
+PARAMETER temperature 0.1

@@ -1,0 +1,38 @@
+server:
+  port: ${SERVER_PORT:8080}
+spring:
+  application:
+    name: rca-agent
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        model: ${OLLAMA_CHAT_MODEL:rca-gemma4-31b}
+        format: json
+        keep-alive: 10m
+        temperature: 0.1
+        num-ctx: 4096
+        num-predict: 512
+      embedding:
+        model: ${OLLAMA_EMBEDDING_MODEL:rca-nomic-embed-v1.5}
+        keep-alive: 10m
+        truncate: true
+rca:
+  neo4j:
+    uri: bolt://localhost:7687
+    username: neo4j
+    password: change-this-password
+  repositories:
+    allowed-root: ${REPOSITORY_ALLOWED_ROOT:}
+  index-directory: .rca-index-gemma4-nomic-v1.5
+  vector:
+    jdbc-url: ${RCA_VECTOR_JDBC_URL:jdbc:postgresql://localhost:5432/rca}
+    username: ${RCA_VECTOR_USERNAME:rca}
+    password: ${RCA_VECTOR_PASSWORD:rca}
+    embedding-batch-size: ${RCA_VECTOR_EMBEDDING_BATCH_SIZE:16}
+    embedding-dimensions: ${RCA_VECTOR_EMBEDDING_DIMENSIONS:768}
+    query-prefix: "${RCA_VECTOR_QUERY_PREFIX:search_query: }"
+    document-prefix: "${RCA_VECTOR_DOCUMENT_PREFIX:search_document: }"
