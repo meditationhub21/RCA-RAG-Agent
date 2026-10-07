@@ -55,12 +55,16 @@ public class RemediationWorkflowService {
 
         String title = blank(request.changeTitle()) ? "rca-fix-" + request.caseId().substring(0, Math.min(8, request.caseId().length())) : request.changeTitle();
         String branch = "codex/rca-" + slug(title) + "-" + BRANCH_TIME.format(Instant.now());
-        run(root, List.of("git", "switch", "-c", branch), Duration.ofSeconds(30));
         Path patchFile = null;
         try {
-            patchFile = Files.createTempFile(root, ".rca-remediation-", ".patch");
+            patchFile = Files.createTempFile("rca-remediation-", ".patch");
             Files.writeString(patchFile, unifiedDiff, StandardCharsets.UTF_8);
-            run(root, List.of("git", "apply", "--check", "--", patchFile.toString()), Duration.ofSeconds(30));
+            try {
+                run(root, List.of("git", "apply", "--check", "--", patchFile.toString()), Duration.ofSeconds(30));
+            } catch (IllegalStateException e) {
+                throw new IllegalArgumentException("The stored LLM patch is malformed or does not match the current repository. No branch was created; rerun /rca after syncing the repository.", e);
+            }
+            run(root, List.of("git", "switch", "-c", branch), Duration.ofSeconds(30));
             run(root, List.of("git", "apply", "--", patchFile.toString()), Duration.ofSeconds(30));
 
             ProcessResult result;
