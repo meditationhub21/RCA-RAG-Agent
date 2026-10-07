@@ -53,7 +53,7 @@ public class DeterministicRcaReasoner {
         String remediation=buildRemediation(context,deepestCause,statement);
         double confidence=context.location()!=null&&context.location().file()!=null&&statement!=null?(deepestCause==null?0.60:0.70):(deepestCause==null?0.25:0.40);
         return new RcaAnalysis(description,context.exceptionType(),statement,null,reasoning,evidence,remediation,confidence,missing,
-                nextInvestigation(context,deepestCause),context.likelyIntroducingCommit());
+                nextInvestigation(context,deepestCause),context.likelyIntroducingCommit(),null);
     }
 
     private static String buildDescription(RcaContext c,String cause,String message,String location,String expression){

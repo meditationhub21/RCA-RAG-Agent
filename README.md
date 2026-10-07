@@ -15,7 +15,7 @@ Mandatory Spring AI LLM synthesis receives only the bounded context packet and t
 - `POST /rca` JSON: `{"repositoryName":"petclinic","errorMessage":"java.lang.NullPointerException: ...","stackTrace":"..."}`
 - `POST /rca` multipart: fields `repositoryName` and `file` (a text log).
 
-The RCA response retains `repository`, `rootCause`, `evidence`, `fixRecommendation`, `confidence`, `similarIncidents`, and `limitation`; it now also returns `reasoning`, `missingInformation`, `nextInvestigation`, and `likelyIntroducingCommit`. `rootCause` includes `exceptionType`, `suspectedExpression`, and `variable` in addition to the original location fields.
+The RCA response includes `repository`, `caseId`, `rootCause`, `evidence`, `fixRecommendation`, `suggestedPatch`, `confidence`, `similarIncidents`, `limitation`, `reasoning`, `missingInformation`, `nextInvestigation`, and `likelyIntroducingCommit`. `rootCause` includes `exceptionType`, `suspectedExpression`, and `variable` in addition to the original location fields.
 
 ## Run locally
 
@@ -73,11 +73,23 @@ Startup requires PostgreSQL/pgvector. Repository syncs that need embeddings requ
 
 The application creates the pgvector extension, an embedding-model-specific vector table, an HNSW cosine index for nearest-neighbor ranking, and a B-tree repository index for namespace filtering. RCA passes the repository namespace into SQL instead of searching all repositories and filtering results in Java. Repository sync embeds changed files and methods in batches; RCA caches repeated query embeddings and stores incidents for later retrieval. This model pairing uses `.rca-index-qwen3-nomic-v1.5/`. Neo4j file hashes are the fallback sync manifest if the local manifest is missing, so the Docker database volumes preserve both graph state and the change baseline. A no-change sync skips the Neo4j entity upsert; if the Git commit changed without indexed file changes, it updates only repository metadata. When files change, the current graph transaction still refreshes the full graph to preserve cross-file relationships.
 
-### Reviewed remediation workflow
+### Model-proposed remediation workflow
 
-The RCA response recommends a change; it does not generate or apply a source patch automatically. After reviewing a unified diff, the optional `POST /repositories/remediation` endpoint creates a `codex/rca-*` branch in the synchronized Git repository, applies the supplied diff, runs the repository's fixed Maven (`verify`) or Gradle (`test bootJar`) command, commits verified changes, and reports the JAR path. It refuses dirty worktrees and is disabled by default. Enable local branch/build execution with `RCA_REMEDIATION_ENABLED=true`. Inspect the branch and commit before publishing. To push and create a pull request through the authenticated GitHub CLI, set `RCA_REMEDIATION_PUBLISHING_ENABLED=true` and call `POST /repositories/remediation/publish` with the reviewed branch. The apply request also has `publish: true` for users who explicitly want push/PR immediately after successful verification.
+`POST /rca` asks the LLM to propose a small unified diff when the supplied source evidence supports a safe change. The response includes a `caseId` and `suggestedPatch`; you do not write or submit the diff yourself. The proposal is limited to one source file already present in the RCA evidence. If the evidence is insufficient, `suggestedPatch` is empty and the remediation endpoint refuses to apply anything.
 
-The apply request contains `repositoryName`, `changeTitle`, `unifiedDiff`, and `publish` (keep `publish` false for review first). After checking out and reviewing the resulting branch, publish with `{"repositoryName":"petclinic","branch":"codex/rca-...","changeTitle":"...","pullRequestBody":"..."}`. These endpoints execute Git and the repository's build wrapper, so enable them only for trusted repositories and keep the service on a trusted network; this app does not add authentication to them.
+After reviewing the RCA and its proposed patch, `POST /repositories/remediation` takes the response's `caseId`, creates a `codex/rca-*` branch in the synchronized Git repository, retrieves that case's stored proposal, checks and applies it, runs the repository's fixed Maven (`verify`) or Gradle (`test bootJar`) command, commits verified changes, and reports the branch and JAR path. It refuses dirty worktrees and is disabled by default. Enable local branch/build execution with `RCA_REMEDIATION_ENABLED=true`. Review the resulting branch and commit before publishing. Publishing remains a separate step: set `RCA_REMEDIATION_PUBLISHING_ENABLED=true`, check out and review the returned branch, then call `POST /repositories/remediation/publish` with `{"repositoryName":"petclinic","branch":"codex/rca-...","changeTitle":"...","pullRequestBody":"..."}`.
+
+Example apply request (use the actual `caseId` returned by `/rca`):
+
+```json
+{
+  "repositoryName": "petclinic",
+  "caseId": "<caseId-from-rca-response>",
+  "changeTitle": "Guard against a null owner"
+}
+```
+
+These endpoints execute Git and the repository's build wrapper, so enable them only for trusted repositories and keep the service on a trusted network; this app does not add authentication to them. The generated patch is an AI proposal: inspect and approve the branch before pushing or opening a PR.
 
 ### Repository path restriction
 

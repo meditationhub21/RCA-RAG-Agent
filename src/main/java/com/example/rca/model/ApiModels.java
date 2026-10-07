@@ -5,7 +5,7 @@ import java.util.List;
 public final class ApiModels {
     private ApiModels() {}
     public record SyncRequest(String repositoryName, String sourceDirectory) {}
-    public record RemediationRequest(String repositoryName, String unifiedDiff, String changeTitle, boolean publish) {}
+    public record RemediationRequest(String repositoryName, String caseId, String changeTitle) {}
     public record RemediationPublishRequest(String repositoryName, String branch, String changeTitle, String pullRequestBody) {}
     public record RemediationResponse(String repository, String status, String branch, String artifactPath,
                                       String verificationOutput, String pullRequestUrl) {}
@@ -28,9 +28,9 @@ public final class ApiModels {
                             String suspectedExpression, String variable) {}
     public record Evidence(String type, String details, String file, Integer line) {}
     public record SimilarIncident(String caseId, String rootCause, String resolution, double similarity) {}
-    public record RcaResponse(String repository, RootCause rootCause, List<Evidence> evidence,
+    public record RcaResponse(String repository, String caseId, RootCause rootCause, List<Evidence> evidence,
                               String fixRecommendation, double confidence, List<SimilarIncident> similarIncidents,
                               String limitation, String reasoning, List<String> missingInformation,
-                              List<String> nextInvestigation, String likelyIntroducingCommit) {}
+                              List<String> nextInvestigation, String likelyIntroducingCommit, String suggestedPatch) {}
     public record ApiError(String error, String message) {}
 }

@@ -101,17 +101,27 @@ public class Neo4jGraphStore implements GraphStore {
         }
     }
     @Override public void storeIncident(String repo,String caseId,String error,String file,String className,String method,
-                                        String rootCause,String evidence,String resolution,double confidence) {
+                                        String rootCause,String evidence,String resolution,double confidence,String proposedPatch) {
         if(driver==null) return;
         try(var session=driver.session()) {
             session.executeWrite(tx->{
-                tx.run("MATCH (r:Repository {name:$repo}) MERGE (c:RCA_CASE {caseId:$id}) SET c.repository=$repo,c.errorMessage=$error,c.affectedFile=$file,c.affectedClass=$class,c.affectedMethod=$method,c.rootCause=$rootCause,c.evidence=$evidence,c.fixRecommendation=$resolution,c.resolution=$resolution,c.confidence=$confidence,c.createdAt=datetime() MERGE (r)-[:HAS_CASE]->(c)",Map.of("repo",repo,"id",caseId,"error",error,"file",Objects.toString(file,""),"class",Objects.toString(className,""),"method",Objects.toString(method,""),"rootCause",rootCause,"evidence",evidence,"resolution",resolution,"confidence",confidence));
+                tx.run("MATCH (r:Repository {name:$repo}) MERGE (c:RCA_CASE {caseId:$id}) SET c.repository=$repo,c.errorMessage=$error,c.affectedFile=$file,c.affectedClass=$class,c.affectedMethod=$method,c.rootCause=$rootCause,c.evidence=$evidence,c.fixRecommendation=$resolution,c.resolution=$resolution,c.proposedPatch=$patch,c.confidence=$confidence,c.createdAt=datetime() MERGE (r)-[:HAS_CASE]->(c)",Map.ofEntries(Map.entry("repo",repo),Map.entry("id",caseId),Map.entry("error",error),Map.entry("file",Objects.toString(file,"")),Map.entry("class",Objects.toString(className,"")),Map.entry("method",Objects.toString(method,"")),Map.entry("rootCause",rootCause),Map.entry("evidence",evidence),Map.entry("resolution",resolution),Map.entry("patch",Objects.toString(proposedPatch,"")),Map.entry("confidence",confidence)));
                 String exception=error.contains(":")?error.substring(0,error.indexOf(':')).trim():error.trim();
                 tx.run("MATCH (c:RCA_CASE {caseId:$id,repository:$repo}) MERGE (e:Exception {name:$exception,repository:$repo}) MERGE (c)-[:RELATED_TO]->(e)",Map.of("repo",repo,"id",caseId,"exception",exception));
                 return null;
             });
         }
         log.info("Stored RCA_CASE in Neo4j: repository={} caseId={}",repo,caseId);
+    }
+    @Override public Optional<String> incidentPatch(String repository,String caseId) {
+        if (driver == null) return Optional.empty();
+        try (var session=driver.session()) {
+            var result=session.run("MATCH (c:RCA_CASE {repository:$repo,caseId:$id}) RETURN c.proposedPatch AS patch",
+                    Map.of("repo",repository,"id",caseId));
+            if (!result.hasNext()) return Optional.empty();
+            String patch=result.single().get("patch").asString("");
+            return patch.isBlank()?Optional.empty():Optional.of(patch);
+        }
     }
     @Override public List<String> context(String repo,String className,String method) {
         if(driver==null) return List.of("Neo4j is not configured; using source and semantic retrieval only.");

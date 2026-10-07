@@ -20,29 +20,31 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-/** Human-triggered, fixed-command verification workflow for a reviewed unified diff. */
+/** Human-triggered verification of the source-grounded patch proposed for an RCA case. */
 @Service
 public class RemediationWorkflowService {
     private static final Duration BUILD_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter BRANCH_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC);
     private final RepositorySyncService repositories;
+    private final GraphStore graph;
     private final boolean enabled;
     private final boolean publishingEnabled;
 
-    public RemediationWorkflowService(RepositorySyncService repositories,
+    public RemediationWorkflowService(RepositorySyncService repositories, GraphStore graph,
             @Value("${rca.remediation.enabled:false}") boolean enabled,
             @Value("${rca.remediation.publishing-enabled:false}") boolean publishingEnabled) {
         this.repositories = repositories;
+        this.graph = graph;
         this.enabled = enabled;
         this.publishingEnabled = publishingEnabled;
     }
 
     public RemediationResponse applyAndVerify(RemediationRequest request) {
         if (!enabled) throw new IllegalStateException("Remediation workflow is disabled; enable rca.remediation.enabled after reviewing the security implications");
-        if (request == null || blank(request.repositoryName()) || blank(request.unifiedDiff()))
-            throw new IllegalArgumentException("repositoryName and a reviewed unifiedDiff are required");
-        if (request.publish() && !publishingEnabled)
-            throw new IllegalStateException("Publishing is disabled; set rca.remediation.publishing-enabled=true to allow Git push and PR creation");
+        if (request == null || blank(request.repositoryName()) || blank(request.caseId()))
+            throw new IllegalArgumentException("repositoryName and caseId from an RCA response are required");
+        String unifiedDiff = graph.incidentPatch(request.repositoryName(), request.caseId())
+                .orElseThrow(() -> new IllegalArgumentException("This RCA case has no safe, source-grounded patch proposal. Review its fixRecommendation and provide the missing evidence before requesting remediation."));
 
         CodeModels.RepositorySnapshot snapshot = repositories.latest(request.repositoryName())
                 .orElseThrow(() -> new IllegalArgumentException("Repository snapshot is unavailable; synchronize or restore it first"));
@@ -51,12 +53,13 @@ public class RemediationWorkflowService {
         requireCleanWorktree(root);
         List<String> verify = verificationCommand(root);
 
-        String branch = "codex/rca-" + slug(request.changeTitle()) + "-" + BRANCH_TIME.format(Instant.now());
+        String title = blank(request.changeTitle()) ? "rca-fix-" + request.caseId().substring(0, Math.min(8, request.caseId().length())) : request.changeTitle();
+        String branch = "codex/rca-" + slug(title) + "-" + BRANCH_TIME.format(Instant.now());
         run(root, List.of("git", "switch", "-c", branch), Duration.ofSeconds(30));
         Path patchFile = null;
         try {
             patchFile = Files.createTempFile(root, ".rca-remediation-", ".patch");
-            Files.writeString(patchFile, request.unifiedDiff(), StandardCharsets.UTF_8);
+            Files.writeString(patchFile, unifiedDiff, StandardCharsets.UTF_8);
             run(root, List.of("git", "apply", "--check", "--", patchFile.toString()), Duration.ofSeconds(30));
             run(root, List.of("git", "apply", "--", patchFile.toString()), Duration.ofSeconds(30));
 
@@ -72,11 +75,7 @@ public class RemediationWorkflowService {
             commitChanges(root, request.changeTitle());
             String artifact = findArtifact(root);
             String prUrl = null;
-            if (request.publish()) {
-                prUrl = publishBranch(root, request.repositoryName(), branch, request.changeTitle(), null);
-            }
-            return new RemediationResponse(request.repositoryName(), request.publish() ? "PUBLISHED" : "VERIFIED", branch,
-                    artifact, tail(result.output()), prUrl);
+            return new RemediationResponse(request.repositoryName(), "VERIFIED", branch, artifact, tail(result.output()), prUrl);
         } catch (IOException e) {
             throw new IllegalStateException("Could not prepare or apply remediation patch on branch " + branch, e);
         } finally {

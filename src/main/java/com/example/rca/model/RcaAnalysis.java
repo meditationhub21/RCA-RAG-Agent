@@ -6,7 +6,7 @@ import java.util.List;
 public record RcaAnalysis(String description,String exceptionType,String suspectedExpression,String variable,
                           String reasoning,List<String> evidenceIds,String fixRecommendation,double confidence,
                           List<String> missingInformation,List<String> nextInvestigation,
-                          String likelyIntroducingCommit) {
+                          String likelyIntroducingCommit,String unifiedDiff) {
     public RcaAnalysis {
         evidenceIds=List.copyOf(evidenceIds); missingInformation=List.copyOf(missingInformation);
         nextInvestigation=List.copyOf(nextInvestigation);

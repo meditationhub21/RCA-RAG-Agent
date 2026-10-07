@@ -19,7 +19,8 @@ public interface GraphStore extends AutoCloseable {
     }
     default void storeIncident(String repository, String caseId, String error, String affectedFile,
                                String affectedClass, String affectedMethod, String rootCause,
-                               String evidence, String resolution, double confidence) {}
+                               String evidence, String resolution, double confidence, String proposedPatch) {}
+    default Optional<String> incidentPatch(String repository, String caseId) { return Optional.empty(); }
     default List<StoredIncident> incidents(String repository, List<String> caseIds, int limit) { return List.of(); }
     @Override default void close() {}
     record MethodContext(String containingClass,String file,Integer line,List<String> callers,List<String> callees,

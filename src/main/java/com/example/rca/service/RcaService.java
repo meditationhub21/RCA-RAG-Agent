@@ -85,15 +85,16 @@ public class RcaService {
         try {
             String serializedContext = mapper.writeValueAsString(context);
             graph.storeIncident(repo, caseId, error, root.file(), root.className(), root.method(), analysis.description(),
-                    serializedContext, analysis.fixRecommendation(), analysis.confidence());
+                    serializedContext, analysis.fixRecommendation(), analysis.confidence(), analysis.unifiedDiff());
         } catch (Exception e) { throw new IllegalStateException("Could not persist RCA context", e); }
         log.info("RCA case graph persistence complete: repository={} elapsedMs={}", repo,
                 (System.nanoTime() - persistStarted) / 1_000_000);
         String limitation = "The LLM synthesized this RCA from source, graph, declared build dependencies, Git evidence, and any fresh runtime metrics. Live CPU/memory/pool/broker metrics are included only when a snapshot has been posted to /repositories/telemetry; a build file does not provide runtime measurements. Confidence is capped by evidence quality. Semantic retrieval uses PostgreSQL/pgvector.";
         log.info("RCA investigation completed: repository={} confidence={} evidenceItems={} caseId={} totalMs={}", repo,
                 analysis.confidence(), responseEvidence.size(), caseId, (System.nanoTime() - requestStarted) / 1_000_000);
-        return new RcaResponse(repo, root, responseEvidence, analysis.fixRecommendation(), analysis.confidence(), similar,
-                limitation, analysis.reasoning(), analysis.missingInformation(), analysis.nextInvestigation(), analysis.likelyIntroducingCommit());
+        return new RcaResponse(repo, caseId, root, responseEvidence, analysis.fixRecommendation(), analysis.confidence(), similar,
+                limitation, analysis.reasoning(), analysis.missingInformation(), analysis.nextInvestigation(),
+                analysis.likelyIntroducingCommit(), analysis.unifiedDiff());
     }
 
     private record Incident(String id, String repository, String rootCause, String resolution, String summary) {}
