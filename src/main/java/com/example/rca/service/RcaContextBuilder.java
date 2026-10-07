@@ -87,10 +87,10 @@ public class RcaContextBuilder {
         if (!gitContext.diffs().isEmpty()) add(evidence, "git-diff", "GIT_DIFF", String.join("\n", gitContext.diffs()), doc == null ? fileName : doc.path(), line);
         String query = error + " " + Objects.toString(trace, "");
         long retrievalStarted = System.nanoTime();
-        var semantic = vectors.search(query, 8).stream().filter(m -> m.id().startsWith(repository + ":"))
+        var semantic = vectors.search(query, 8, repository).stream()
                 .map(m -> m.text().substring(0, Math.min(m.text().length(), 3000))).toList();
         semantic.forEach(s -> add(evidence, "semantic-" + evidence.size(), "SEMANTIC_CODE", s, null, null));
-        var similar = vectors.search(query, 5).stream().filter(m -> m.id().startsWith("incident:"))
+        var similar = vectors.search(query, 5, "incident").stream()
                 .map(m -> priorIncidents.get(m.id())).filter(Objects::nonNull).toList();
         for (int i = 0; i < similar.size(); i++) add(evidence, "similar-rca-" + i, "SIMILAR_RCA", similar.get(i), null, null);
         long retrievalMs = (System.nanoTime() - retrievalStarted) / 1_000_000;

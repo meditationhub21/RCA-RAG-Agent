@@ -5,6 +5,10 @@ import java.util.List;
 public final class ApiModels {
     private ApiModels() {}
     public record SyncRequest(String repositoryName, String sourceDirectory) {}
+    public record RemediationRequest(String repositoryName, String unifiedDiff, String changeTitle, boolean publish) {}
+    public record RemediationPublishRequest(String repositoryName, String branch, String changeTitle, String pullRequestBody) {}
+    public record RemediationResponse(String repository, String status, String branch, String artifactPath,
+                                      String verificationOutput, String pullRequestUrl) {}
     public record SyncResponse(String repository, String status, String commit, int filesScanned,
                                int filesChanged, int graphNodesUpdated, int embeddingsUpdated,
                                java.util.List<String> declaredDependencies) {

@@ -40,7 +40,10 @@ public class PgVectorStore implements VectorStore {
         try (var connection = connection(); var statement = connection.createStatement()) {
             statement.execute("CREATE EXTENSION IF NOT EXISTS vector");
             statement.execute("CREATE TABLE IF NOT EXISTS " + tableName + " (id text PRIMARY KEY, content text NOT NULL, embedding vector(" + dimensions + "))");
+            statement.execute("ALTER TABLE " + tableName + " ADD COLUMN IF NOT EXISTS repository text");
+            statement.execute("UPDATE " + tableName + " SET repository=split_part(id,':',1) WHERE repository IS NULL");
             statement.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_hnsw_idx ON " + tableName + " USING hnsw (embedding vector_cosine_ops)");
+            statement.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_repository_idx ON " + tableName + " (repository)");
             log.info("pgvector initialized: table={} dimensions={} embeddingModel={}", tableName, dimensions, embeddingModelName);
         } catch (Exception e) {
             throw new IllegalStateException("Could not initialize mandatory pgvector store: " + e.getMessage(), e);
@@ -55,8 +58,8 @@ public class PgVectorStore implements VectorStore {
     @Override
     public void upsertAll(List<Entry> entries) {
         if (entries.isEmpty()) return;
-        String sql = "INSERT INTO " + tableName + " (id,content,embedding) VALUES(?,?,?::vector) " +
-                "ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content,embedding=EXCLUDED.embedding";
+        String sql = "INSERT INTO " + tableName + " (id,content,embedding,repository) VALUES(?,?,?::vector,?) " +
+                "ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content,embedding=EXCLUDED.embedding,repository=EXCLUDED.repository";
         int completed = 0;
         for (int offset = 0; offset < entries.size(); offset += embeddingBatchSize) {
             long batchStarted = System.nanoTime();
@@ -80,6 +83,7 @@ public class PgVectorStore implements VectorStore {
                     statement.setString(1, entry.id());
                     statement.setString(2, entry.text());
                     statement.setString(3, vectorText(vector));
+                    statement.setString(4, namespace(entry.id()));
                     statement.addBatch();
                 }
                 statement.executeBatch();
@@ -106,17 +110,25 @@ public class PgVectorStore implements VectorStore {
 
     @Override
     public List<Match> search(String query, int limit) {
+        return search(query, limit, null);
+    }
+
+    @Override
+    public List<Match> search(String query, int limit, String namespace) {
         long searchStarted = System.nanoTime();
         float[] vector = embeddings.embedQuery(query);
         long embeddingMs = (System.nanoTime() - searchStarted) / 1_000_000;
-        String sql = "SELECT id,content,1-(embedding <=> ?::vector) AS score FROM " + tableName +
+        String filter = namespace == null || namespace.isBlank() ? "" : " WHERE repository = ?";
+        String sql = "SELECT id,content,1-(embedding <=> ?::vector) AS score FROM " + tableName + filter +
                 " ORDER BY embedding <=> ?::vector LIMIT ?";
         long databaseStarted = System.nanoTime();
         try (var connection = connection(); var statement = connection.prepareStatement(sql)) {
             String value = vectorText(vector);
             statement.setString(1, value);
-            statement.setString(2, value);
-            statement.setInt(3, limit);
+            int parameter = 2;
+            if (!filter.isEmpty()) statement.setString(parameter++, namespace);
+            statement.setString(parameter++, value);
+            statement.setInt(parameter, limit);
             try (var results = statement.executeQuery()) {
                 var matches = new java.util.ArrayList<Match>();
                 while (results.next()) matches.add(new Match(results.getString(1), results.getString(2), results.getDouble(3)));
@@ -150,5 +162,9 @@ public class PgVectorStore implements VectorStore {
 
     private static String escapeLike(String value) {
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+    private static String namespace(String id) {
+        int delimiter = id.indexOf(':');
+        return delimiter < 0 ? "" : id.substring(0, delimiter);
     }
 }

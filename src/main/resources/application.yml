@@ -10,15 +10,15 @@ spring:
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
       chat:
-        model: ${OLLAMA_CHAT_MODEL:rca-qwen3.5-4b}
+        model: ${OLLAMA_CHAT_MODEL:rca-qwen3-4b}
         format: json
-        keep-alive: 10m
+        keep-alive: 30m
         temperature: 0.1
         num-ctx: 4096
-        num-predict: 512
+        num-predict: 1024
       embedding:
         model: ${OLLAMA_EMBEDDING_MODEL:rca-nomic-embed-v1.5}
-        keep-alive: 10m
+        keep-alive: 30m
         truncate: true
 rca:
   neo4j:
@@ -27,7 +27,7 @@ rca:
     password: change-this-password
   repositories:
     allowed-root: ${REPOSITORY_ALLOWED_ROOT:}
-  index-directory: .rca-index-gemma4-nomic-v1.5
+  index-directory: .rca-index-qwen3-nomic-v1.5
   vector:
     jdbc-url: ${RCA_VECTOR_JDBC_URL:jdbc:postgresql://localhost:5432/rca}
     username: ${RCA_VECTOR_USERNAME:rca}
@@ -36,3 +36,6 @@ rca:
     embedding-dimensions: ${RCA_VECTOR_EMBEDDING_DIMENSIONS:768}
     query-prefix: "${RCA_VECTOR_QUERY_PREFIX:search_query: }"
     document-prefix: "${RCA_VECTOR_DOCUMENT_PREFIX:search_document: }"
+  remediation:
+    enabled: ${RCA_REMEDIATION_ENABLED:false}
+    publishing-enabled: ${RCA_REMEDIATION_PUBLISHING_ENABLED:false}

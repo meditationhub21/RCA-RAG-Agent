@@ -36,7 +36,7 @@ public class RcaService {
         long requestStarted = System.nanoTime();
         log.info("RCA investigation started: repository={} stackTraceProvided={}", repo, trace != null && !trace.isBlank());
         var snapshot = repositories.latest(repo).orElseThrow(() -> new IllegalArgumentException(
-                "Repository is not synchronized in this process. Call POST /repositories/sync first."));
+                "No persisted repository snapshot is available. Call POST /repositories/sync and verify the saved source directory is accessible."));
         Map<String, String> prior = incidents.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey,
                 e -> e.getValue().rootCause + " | " + e.getValue().resolution));
         long incidentHistoryStarted = System.nanoTime();
@@ -60,8 +60,7 @@ public class RcaService {
                 context.location() == null ? null : context.location().line(), analysis.exceptionType(),
                 analysis.suspectedExpression(), analysis.variable());
         long incidentRetrievalStarted = System.nanoTime();
-        var incidentMatches = vectors.search(error + " " + Objects.toString(trace, ""), 5).stream()
-                .filter(m -> m.id().startsWith("incident:")).toList();
+        var incidentMatches = vectors.search(error + " " + Objects.toString(trace, ""), 5, "incident");
         log.info("RCA response incident retrieval complete: repository={} matches={} elapsedMs={}", repo, incidentMatches.size(),
                 (System.nanoTime() - incidentRetrievalStarted) / 1_000_000);
         var incidentIds = incidentMatches.stream().map(m -> m.id().substring("incident:".length())).toList();
@@ -90,7 +89,7 @@ public class RcaService {
         } catch (Exception e) { throw new IllegalStateException("Could not persist RCA context", e); }
         log.info("RCA case graph persistence complete: repository={} elapsedMs={}", repo,
                 (System.nanoTime() - persistStarted) / 1_000_000);
-        String limitation = "The LLM synthesized this RCA from source, graph, declared build dependencies, Git evidence, and any fresh runtime metrics. Live CPU/memory/pool/broker metrics are included only when a snapshot has been posted to /repositories/telemetry; a build file does not provide runtime measurements. Confidence is capped by evidence quality. Vector retrieval currently uses the configured local store.";
+        String limitation = "The LLM synthesized this RCA from source, graph, declared build dependencies, Git evidence, and any fresh runtime metrics. Live CPU/memory/pool/broker metrics are included only when a snapshot has been posted to /repositories/telemetry; a build file does not provide runtime measurements. Confidence is capped by evidence quality. Semantic retrieval uses PostgreSQL/pgvector.";
         log.info("RCA investigation completed: repository={} confidence={} evidenceItems={} caseId={} totalMs={}", repo,
                 analysis.confidence(), responseEvidence.size(), caseId, (System.nanoTime() - requestStarted) / 1_000_000);
         return new RcaResponse(repo, root, responseEvidence, analysis.fixRecommendation(), analysis.confidence(), similar,

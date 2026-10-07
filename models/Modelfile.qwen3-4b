@@ -1,0 +1,4 @@
+FROM /models/Qwen3-4B-Q4_K_M.gguf
+PARAMETER num_ctx 4096
+PARAMETER num_predict 1024
+PARAMETER temperature 0.1

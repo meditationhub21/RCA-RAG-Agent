@@ -39,21 +39,17 @@ public class RepositorySyncService {
             Path root=Path.of(Objects.requireNonNull(sourceDirectory,"sourceDirectory is required")).toRealPath();
             if(!Files.isDirectory(root)) throw new IllegalArgumentException("sourceDirectory must be a directory");
             if(allowedRoot!=null&&!allowedRoot.isBlank()&&!root.startsWith(Path.of(allowedRoot).toRealPath())) throw new IllegalArgumentException("sourceDirectory is outside REPOSITORY_ALLOWED_ROOT");
-            Path manifestDirectory=Path.of(indexDirectory);
-            if(!manifestDirectory.isAbsolute()) manifestDirectory=Path.of(System.getProperty("user.dir")).resolve(manifestDirectory);
-            Path manifest=manifestDirectory.resolve(name.replaceAll("[^A-Za-z0-9._-]","_")+".json");
+            Path manifest=manifestPath(name);
             log.debug("Using repository hash manifest: repository={} manifest={}",name,manifest);
-            var prior=readIndex(manifest); var docs=new ArrayList<CodeModels.SourceDocument>(); var types=new ArrayList<CodeModels.TypeInfo>(); var hashes=new TreeMap<String,String>();
-            long scanStarted = System.nanoTime();
-            try(Stream<Path> paths=Files.walk(root)) {
-                paths.filter(Files::isRegularFile).filter(p->!excluded(root.relativize(p))).filter(RepositorySyncService::indexable).forEach(p->{
-                    try {
-                        String rel=root.relativize(p).toString().replace('\\','/'); String content=Files.readString(p); String hash=sha256(content); hashes.put(rel,hash);
-                        String kind=p.toString().endsWith(".java")?"JAVA":"CONFIG"; docs.add(new CodeModels.SourceDocument(rel,content,hash,kind));
-                        if(kind.equals("JAVA")) types.addAll(parser.parse(p,rel,content));
-                    } catch(IOException e){throw new UncheckedIOException(e);}
-                });
+            Map<String,String> priorIndex=readIndex(manifest);
+            if (priorIndex.isEmpty() && graph.repositoryDirectory(name).isPresent()) {
+                priorIndex = new TreeMap<>(graph.repositoryFileHashes(name));
+                if (!priorIndex.isEmpty()) log.info("Loaded prior file hashes from persistent graph metadata: repository={} files={}", name, priorIndex.size());
             }
+            final Map<String,String> prior = priorIndex;
+            long scanStarted = System.nanoTime();
+            ScannedRepository scanned = scan(root, name);
+            var docs=scanned.documents(); var types=scanned.types(); var hashes=scanned.hashes();
             log.info("Repository scan complete: repository={} filesScanned={} javaTypes={} elapsedMs={}",name,docs.size(),types.size(),
                     (System.nanoTime() - scanStarted) / 1_000_000);
             int changed=(int)hashes.entrySet().stream().filter(e->!Objects.equals(prior.get(e.getKey()),e.getValue())).count()+ (int)prior.keySet().stream().filter(k->!hashes.containsKey(k)).count();
@@ -65,7 +61,16 @@ public class RepositorySyncService {
             var snapshot=new CodeModels.RepositorySnapshot(name,root.toString(),commit,docs,types,dependencies);
             snapshots.put(name,snapshot);
             long graphStarted = System.nanoTime();
-            int graphNodes=graph.upsert(snapshot);
+            boolean graphExists = graph.repositoryDirectory(name).isPresent();
+            boolean graphCommitUnchanged = Objects.equals(graph.repositoryCommit(name).orElse(null), commit);
+            int graphNodes;
+            if (changed == 0 && graphExists) {
+                if (!graphCommitUnchanged) graph.updateRepositoryMetadata(snapshot);
+                graphNodes = 0;
+                log.info("Repository graph unchanged; skipped entity upsert: repository={} commitChanged={}", name, !graphCommitUnchanged);
+            } else {
+                graphNodes=graph.upsert(snapshot);
+            }
             log.info("Repository graph write timing: repository={} nodes={} elapsedMs={}", name, graphNodes,
                     (System.nanoTime() - graphStarted) / 1_000_000);
             var vectorEntries=new ArrayList<VectorStore.Entry>();
@@ -91,7 +96,53 @@ public class RepositorySyncService {
         } catch(IllegalArgumentException e){log.warn("Repository sync rejected: repository={} reason={}",name,e.getMessage());throw e;}
         catch(Exception e){log.error("Repository sync failed: repository={} sourceDirectory={}",name,sourceDirectory,e);throw new IllegalStateException("Repository sync failed: "+e.getMessage(),e);}
     }
-    public Optional<CodeModels.RepositorySnapshot> latest(String name) { return Optional.ofNullable(snapshots.get(name)); }
+    public Optional<CodeModels.RepositorySnapshot> latest(String name) {
+        CodeModels.RepositorySnapshot cached = snapshots.get(name);
+        if (cached != null) return Optional.of(cached);
+        Optional<String> persistedDirectory = graph.repositoryDirectory(name);
+        if (persistedDirectory.isEmpty()) return Optional.empty();
+        try {
+            Path root = Path.of(persistedDirectory.get()).toRealPath();
+            if (!Files.isDirectory(root)) return Optional.empty();
+            if (allowedRoot != null && !allowedRoot.isBlank() && !root.startsWith(Path.of(allowedRoot).toRealPath())) {
+                log.warn("Stored repository path is outside REPOSITORY_ALLOWED_ROOT: repository={}", name);
+                return Optional.empty();
+            }
+            long started = System.nanoTime();
+            ScannedRepository scanned = scan(root, name);
+            String commit = git(root, "rev-parse", "HEAD").orElse(graph.repositoryCommit(name).orElse(null));
+            var snapshot = new CodeModels.RepositorySnapshot(name, root.toString(), commit, scanned.documents(), scanned.types(),
+                    dependencyScanner.scan(scanned.documents()));
+            snapshots.put(name, snapshot);
+            log.info("Repository snapshot restored from persisted graph metadata: repository={} files={} types={} elapsedMs={}",
+                    name, scanned.documents().size(), scanned.types().size(), (System.nanoTime() - started) / 1_000_000);
+            return Optional.of(snapshot);
+        } catch (Exception e) {
+            log.warn("Could not restore repository snapshot from persisted graph metadata: repository={} reason={}", name, e.getMessage());
+            return Optional.empty();
+        }
+    }
+    private ScannedRepository scan(Path root, String name) throws IOException {
+        var docs=new ArrayList<CodeModels.SourceDocument>();
+        var types=new ArrayList<CodeModels.TypeInfo>();
+        var hashes=new TreeMap<String,String>();
+        try(Stream<Path> paths=Files.walk(root)) {
+            paths.filter(Files::isRegularFile).filter(p->!excluded(root.relativize(p))).filter(RepositorySyncService::indexable).forEach(p->{
+                try {
+                    String rel=root.relativize(p).toString().replace('\\','/'); String content=Files.readString(p); String hash=sha256(content); hashes.put(rel,hash);
+                    String kind=p.toString().endsWith(".java")?"JAVA":"CONFIG"; docs.add(new CodeModels.SourceDocument(rel,content,hash,kind));
+                    if(kind.equals("JAVA")) types.addAll(parser.parse(p,rel,content));
+                } catch(IOException e){throw new UncheckedIOException(e);}
+            });
+        }
+        return new ScannedRepository(List.copyOf(docs), List.copyOf(types), hashes);
+    }
+    private Path manifestPath(String name) {
+        Path directory=Path.of(indexDirectory);
+        if(!directory.isAbsolute()) directory=Path.of(System.getProperty("user.dir")).resolve(directory);
+        return directory.resolve(name.replaceAll("[^A-Za-z0-9._-]","_")+".json");
+    }
+    private record ScannedRepository(List<CodeModels.SourceDocument> documents, List<CodeModels.TypeInfo> types, Map<String,String> hashes) {}
     private Map<String,String> readIndex(Path path){try { if(Files.exists(path)) return mapper.readValue(path.toFile(),mapper.getTypeFactory().constructMapType(TreeMap.class,String.class,String.class)); }catch(Exception ignored){} return Map.of();}
     private static boolean indexable(Path p){String s=p.toString().replace('\\','/');return s.endsWith(".java")||s.endsWith(".yml")||s.endsWith(".yaml")||s.endsWith(".properties")||s.endsWith(".toml")||s.endsWith("pom.xml")||s.endsWith("build.gradle")||s.endsWith("build.gradle.kts");}
     private static boolean excluded(Path p){for(Path part:p) if(Set.of(".git","target","build","node_modules",".idea").contains(part.toString())) return true;return false;}

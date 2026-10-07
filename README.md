@@ -28,7 +28,7 @@ mvn spring-boot:run
 The application requires Neo4j, PostgreSQL with pgvector, and a local Ollama server. The Compose Ollama service mounts `./models` read-only at `/models`. Copy your GGUF files into the `models` directory at the project root with these exact filenames:
 
 ```text
-models/Qwen3.5-4B-Q4_K_M.gguf
+models/Qwen3-4B-Q4_K_M.gguf
 models/nomic-embed-text-v1.5.Q4_0.gguf
 ```
 
@@ -42,7 +42,7 @@ Import the GGUF files into Ollama once. Ollama stores the imported model data in
 
 ```powershell
 docker compose exec ollama ollama --version
-docker compose exec ollama ollama create rca-qwen3.5-4b -f /models/Modelfile.qwen3.5-4b
+docker compose exec ollama ollama create rca-qwen3-4b -f /models/Modelfile.qwen3-4b
 docker compose exec ollama ollama create rca-nomic-embed-v1.5 -f /models/Modelfile.nomic-embed-v1.5
 docker compose exec ollama ollama list
 docker compose ps
@@ -51,7 +51,7 @@ docker compose ps
 The defaults are Neo4j at `bolt://localhost:7687` (`neo4j/change-this-password`), PostgreSQL at `localhost:5432` (`rca/rca`), and Ollama at `http://localhost:11434`. Verify the GGUF imports with a direct chat request and an embedding request before starting the app. GGUF support depends on the Ollama build supporting each model architecture; the files are not included in this repository.
 
 ```powershell
-docker compose exec ollama ollama run rca-qwen3.5-4b "Reply with READY."
+docker compose exec ollama ollama run rca-qwen3-4b "Reply with READY."
 $probe = @{ model = 'rca-nomic-embed-v1.5'; input = 'RCA embedding compatibility probe' } | ConvertTo-Json
 $embedding = Invoke-RestMethod -Method Post -Uri 'http://localhost:11434/api/embed' -ContentType 'application/json' -Body $probe
 $embedding.embeddings[0].Count
@@ -59,19 +59,25 @@ $embedding.embeddings[0].Count
 
 The embedding probe should report `768`, matching `RCA_VECTOR_EMBEDDING_DIMENSIONS`. If the GGUF model imports but the embedding endpoint fails, do not start a repository sync yet; resolve that Ollama/model compatibility error first.
 
-Graph persistence includes repository/file/type/method relationships and `RCA_CASE` records. The app retains the latest repository snapshot in process memory, so sync the repository again after restarting the app and after source edits. Git blame/history queries read the repository during an investigation, but source evidence comes from the last synchronized snapshot.
+Graph persistence includes repository/file/type/method relationships and `RCA_CASE` records. Neo4j stores each synchronized repository's canonical source directory. After an app restart, `/rca` lazily rescans that directory and restores the in-memory snapshot; sync again only if the saved directory is unavailable or you want to update the index after source changes. Keep the repository path available to the app. Git blame/history queries read the repository during an investigation.
 
 ### Required local LLM and vector database
 
-The app uses Spring AI `ChatClient` with the imported local `rca-qwen3.5-4b` GGUF for RCA synthesis and `rca-nomic-embed-v1.5` for local embeddings stored in mandatory PostgreSQL/pgvector. No OpenAI API key or paid inference credits are required. The models are configurable with `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBEDDING_MODEL`, and `OLLAMA_BASE_URL`. Nomic v1.5 uses `search_document: ` for indexed text and `search_query: ` for RCA retrieval queries. Its configured output dimension is 768; set `RCA_VECTOR_EMBEDDING_DIMENSIONS` to the selected model's output dimension when changing the embedding model. The prompt context is bounded and chat generation is capped at 512 tokens for this local setup.
+The app uses Spring AI `ChatClient` with the imported local `rca-qwen3-4b` GGUF for RCA synthesis and `rca-nomic-embed-v1.5` for local embeddings stored in mandatory PostgreSQL/pgvector. No OpenAI API key or paid inference credits are required. The models are configurable with `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBEDDING_MODEL`, and `OLLAMA_BASE_URL`. Nomic v1.5 uses `search_document: ` for indexed text and `search_query: ` for RCA retrieval queries. Its configured output dimension is 768; set `RCA_VECTOR_EMBEDDING_DIMENSIONS` to the selected model's output dimension when changing the embedding model. RCA context is bounded to about 4,200 characters and generation is capped at 1,024 tokens. This is a ceiling, not a request to generate 1,024 tokens.
 
 ```powershell
 mvn spring-boot:run
 ```
 
-Startup requires PostgreSQL/pgvector. Repository syncs that need embeddings require the configured Nomic model, and RCA requests require the configured Qwen model. Qwen3.5 4B Q4_K_M is the default chat model for local RCA synthesis. CPU-only inference is supported; Intel GPU acceleration depends on Ollama Vulkan device detection and, when running Ollama in Docker, GPU passthrough. The Intel AI Boost NPU is not used by Ollama.
+Startup requires PostgreSQL/pgvector. Repository syncs that need embeddings require the configured Nomic model, and RCA requests require the configured Qwen model. Qwen3 4B Q4_K_M is the default chat model for local RCA synthesis. CPU-only inference is supported; Intel GPU acceleration depends on Ollama Vulkan device detection and, when running Ollama in Docker, GPU passthrough. The Intel AI Boost NPU is not used by Ollama.
 
-The application creates the pgvector extension, an embedding-model-specific vector table, and an HNSW index on startup. Repository sync embeds changed files and methods in batches; RCA caches the repeated query embedding and stores incidents for later retrieval. This model pairing uses `.rca-index-gemma4-nomic-v1.5/` so the first sync rebuilds vectors using the new Nomic GGUF instead of treating the old model's manifest as current. The app retains the latest repository snapshot in process memory, so sync the repository again after restarting the app and after source edits.
+The application creates the pgvector extension, an embedding-model-specific vector table, an HNSW cosine index for nearest-neighbor ranking, and a B-tree repository index for namespace filtering. RCA passes the repository namespace into SQL instead of searching all repositories and filtering results in Java. Repository sync embeds changed files and methods in batches; RCA caches repeated query embeddings and stores incidents for later retrieval. This model pairing uses `.rca-index-qwen3-nomic-v1.5/`. Neo4j file hashes are the fallback sync manifest if the local manifest is missing, so the Docker database volumes preserve both graph state and the change baseline. A no-change sync skips the Neo4j entity upsert; if the Git commit changed without indexed file changes, it updates only repository metadata. When files change, the current graph transaction still refreshes the full graph to preserve cross-file relationships.
+
+### Reviewed remediation workflow
+
+The RCA response recommends a change; it does not generate or apply a source patch automatically. After reviewing a unified diff, the optional `POST /repositories/remediation` endpoint creates a `codex/rca-*` branch in the synchronized Git repository, applies the supplied diff, runs the repository's fixed Maven (`verify`) or Gradle (`test bootJar`) command, commits verified changes, and reports the JAR path. It refuses dirty worktrees and is disabled by default. Enable local branch/build execution with `RCA_REMEDIATION_ENABLED=true`. Inspect the branch and commit before publishing. To push and create a pull request through the authenticated GitHub CLI, set `RCA_REMEDIATION_PUBLISHING_ENABLED=true` and call `POST /repositories/remediation/publish` with the reviewed branch. The apply request also has `publish: true` for users who explicitly want push/PR immediately after successful verification.
+
+The apply request contains `repositoryName`, `changeTitle`, `unifiedDiff`, and `publish` (keep `publish` false for review first). After checking out and reviewing the resulting branch, publish with `{"repositoryName":"petclinic","branch":"codex/rca-...","changeTitle":"...","pullRequestBody":"..."}`. These endpoints execute Git and the repository's build wrapper, so enable them only for trusted repositories and keep the service on a trusted network; this app does not add authentication to them.
 
 ### Repository path restriction
 

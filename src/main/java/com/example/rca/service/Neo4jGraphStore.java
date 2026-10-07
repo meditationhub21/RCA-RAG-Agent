@@ -63,6 +63,43 @@ public class Neo4jGraphStore implements GraphStore {
         log.info("Neo4j graph transaction committed: repository={} indexedNodes={}",s.name(),nodes);
         return nodes;
     }
+    @Override public Optional<String> repositoryDirectory(String repository) {
+        if (driver == null) return Optional.empty();
+        try (var session = driver.session()) {
+            var result = session.run("MATCH (r:Repository {name:$repo}) RETURN r.directory AS directory", Map.of("repo", repository));
+            if (!result.hasNext()) return Optional.empty();
+            var value = result.single().get("directory");
+            return value.isNull() || value.asString().isBlank() ? Optional.empty() : Optional.of(value.asString());
+        }
+    }
+    @Override public Optional<String> repositoryCommit(String repository) {
+        if (driver == null) return Optional.empty();
+        try (var session = driver.session()) {
+            var result = session.run("MATCH (r:Repository {name:$repo}) RETURN r.commit AS commit", Map.of("repo", repository));
+            if (!result.hasNext()) return Optional.empty();
+            var value = result.single().get("commit");
+            return value.isNull() || value.asString().isBlank() ? Optional.empty() : Optional.of(value.asString());
+        }
+    }
+    @Override public Map<String,String> repositoryFileHashes(String repository) {
+        if (driver == null) return Map.of();
+        try (var session = driver.session()) {
+            var hashes = new HashMap<String,String>();
+            var rows = session.run("MATCH (f:File {repository:$repo}) RETURN f.path AS path,f.hash AS hash", Map.of("repo", repository)).list();
+            for (var row : rows) hashes.put(row.get("path").asString(), row.get("hash").asString());
+            return Map.copyOf(hashes);
+        }
+    }
+    @Override public void updateRepositoryMetadata(CodeModels.RepositorySnapshot snapshot) {
+        if (driver == null) return;
+        try (var session = driver.session()) {
+            session.executeWrite(tx -> {
+                tx.run("MATCH (r:Repository {name:$repo}) SET r.directory=$dir,r.commit=$commit",
+                        Map.of("repo", snapshot.name(), "dir", snapshot.directory(), "commit", Objects.toString(snapshot.commit(), "")));
+                return null;
+            });
+        }
+    }
     @Override public void storeIncident(String repo,String caseId,String error,String file,String className,String method,
                                         String rootCause,String evidence,String resolution,double confidence) {
         if(driver==null) return;
