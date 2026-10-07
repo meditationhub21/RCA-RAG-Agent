@@ -34,4 +34,16 @@ class LlmRcaSynthesizerTest {
                 "+        return total / itemCount;\n";
         assertEquals(true, LlmRcaSynthesizer.hasValidHunks(valid));
     }
+
+    @Test void recalculatesIncorrectUnifiedDiffHunkCounts() {
+        String malformedCounts = "diff --git a/Example.java b/Example.java\n" +
+                "--- a/Example.java\n+++ b/Example.java\n" +
+                "@@ -10,9 +10,12 @@ average()\n" +
+                "-        return total / itemCount;\n" +
+                "+        if (itemCount == 0) throw new IllegalArgumentException();\n" +
+                "+        return total / itemCount;\n";
+        String repaired = LlmRcaSynthesizer.normalizeHunkCounts(malformedCounts);
+        assertEquals(true, LlmRcaSynthesizer.hasValidHunks(repaired), repaired);
+        assertEquals(true, repaired.contains("@@ -10,1 +10,2 @@ average()"));
+    }
 }

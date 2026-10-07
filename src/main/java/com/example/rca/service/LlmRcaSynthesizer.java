@@ -110,6 +110,8 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
 
     static String validatedDiff(String diff, List<PromptEvidence> evidence) {
         if (diff == null || diff.isBlank() || diff.length() > 20000 || !diff.startsWith("diff --git ")) return "";
+        diff = normalizeHunkCounts(diff);
+        if (diff == null) return "";
         var allowedPaths = evidence.stream().filter(item -> "SOURCE_CODE".equals(item.type()) && item.file() != null)
                 .map(PromptEvidence::file).collect(Collectors.toSet());
         var headers = diff.lines().filter(line -> line.startsWith("diff --git ")).toList();
@@ -121,6 +123,42 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
         if (diff.contains("GIT binary patch") || diff.contains("new file mode") || diff.contains("deleted file mode")) return "";
         if (!hasValidHunks(diff)) return "";
         return diff.strip();
+    }
+
+    static String normalizeHunkCounts(String diff) {
+        if (diff == null || diff.isBlank()) return null;
+        String normalized = diff.replace("\r\n", "\n").replace('\r', '\n');
+        while (normalized.endsWith("\n")) normalized = normalized.substring(0, normalized.length() - 1);
+        String[] lines = normalized.split("\n", -1);
+        var output = new ArrayList<String>();
+        var hunkHeader = java.util.regex.Pattern.compile("^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@(.*)$");
+        boolean found = false;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (!line.startsWith("@@ ")) {
+                if (line.startsWith("diff --git ") && found) found = false;
+                output.add(line);
+                continue;
+            }
+            var matcher = hunkHeader.matcher(line);
+            if (!matcher.matches()) return null;
+            int oldCount = 0, newCount = 0;
+            int bodyEnd = i + 1;
+            for (; bodyEnd < lines.length; bodyEnd++) {
+                String bodyLine = lines[bodyEnd];
+                if (bodyLine.startsWith("@@ ") || bodyLine.startsWith("diff --git ")) break;
+                if (bodyLine.startsWith("\\")) continue;
+                if (bodyLine.startsWith(" ")) { oldCount++; newCount++; }
+                else if (bodyLine.startsWith("-")) oldCount++;
+                else if (bodyLine.startsWith("+")) newCount++;
+                else return null;
+            }
+            output.add("@@ -" + matcher.group(1) + "," + oldCount + " +" + matcher.group(2) + "," + newCount + " @@" + matcher.group(3));
+            for (int bodyLine = i + 1; bodyLine < bodyEnd; bodyLine++) output.add(lines[bodyLine]);
+            found = true;
+            i = bodyEnd - 1;
+        }
+        return found ? String.join("\n", output) : null;
     }
 
     static boolean hasValidHunks(String diff) {
