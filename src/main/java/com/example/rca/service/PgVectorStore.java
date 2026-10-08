@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.sql.DriverManager;
 import java.util.List;
+import java.util.Set;
 
 /** Persistent cosine retrieval using PostgreSQL pgvector and a local Spring AI embedding model. */
 @Component
@@ -139,6 +140,22 @@ public class PgVectorStore implements VectorStore {
             }
         } catch (Exception e) {
             throw new IllegalStateException("Could not search pgvector", e);
+        }
+    }
+
+    @Override
+    public Set<String> idsForNamespace(String namespace) {
+        if (namespace == null || namespace.isBlank()) return Set.of();
+        String sql = "SELECT id FROM " + tableName + " WHERE repository = ?";
+        try (var connection = connection(); var statement = connection.prepareStatement(sql)) {
+            statement.setString(1, namespace);
+            try (var results = statement.executeQuery()) {
+                var ids = new java.util.HashSet<String>();
+                while (results.next()) ids.add(results.getString(1));
+                return Set.copyOf(ids);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not inspect existing pgvector entries", e);
         }
     }
 

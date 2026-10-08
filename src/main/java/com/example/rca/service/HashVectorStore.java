@@ -8,6 +8,9 @@ public class HashVectorStore implements VectorStore {
     private final Map<String, String> documents = new ConcurrentHashMap<>();
     @Override public void upsert(String id, String text) { documents.put(id, text); }
     @Override public void deletePrefix(String prefix) { documents.keySet().removeIf(id->id.startsWith(prefix)); }
+    @Override public Set<String> idsForNamespace(String namespace) {
+        String prefix=namespace+":"; return documents.keySet().stream().filter(id->id.startsWith(prefix)).collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
     @Override public List<Match> search(String query, int limit) {
         var q = vector(query);
         return documents.entrySet().stream().map(e -> new Match(e.getKey(), e.getValue(), cosine(q, vector(e.getValue()))))

@@ -74,12 +74,19 @@ public class RepositorySyncService {
             log.info("Repository graph write timing: repository={} nodes={} elapsedMs={}", name, graphNodes,
                     (System.nanoTime() - graphStarted) / 1_000_000);
             var vectorEntries=new ArrayList<VectorStore.Entry>();
+            var persistedVectorIds = vectors.idsForNamespace(name);
             for(var e:prior.entrySet()) if(!Objects.equals(hashes.get(e.getKey()),e.getValue())) vectors.deletePrefix(name+":"+e.getKey());
-            for(var d:docs) if(!Objects.equals(prior.get(d.path()),d.sha256()))
-                vectorEntries.add(new VectorStore.Entry(name+":"+d.path(),d.path()+"\n"+d.content()));
-            for(var t:types) if(!Objects.equals(prior.get(t.file()),hashes.get(t.file()))) for(var m:t.methods())
-                vectorEntries.add(new VectorStore.Entry(name+":"+t.file()+"#"+t.name()+"."+m.name(),"Repository "+name+" class "+t.name()+" method "+m.name()+"\n"+m.body()));
-            log.info("Repository vector indexing started: repository={} vectorEntries={} changedFiles={}",name,vectorEntries.size(),changed);
+            for(var d:docs) {
+                String id=name+":"+d.path();
+                if(!Objects.equals(prior.get(d.path()),d.sha256()) || !persistedVectorIds.contains(id))
+                    vectorEntries.add(new VectorStore.Entry(id,d.path()+"\n"+d.content()));
+            }
+            for(var t:types) for(var m:t.methods()) {
+                String id=name+":"+t.file()+"#"+t.name()+"."+m.name();
+                if(!Objects.equals(prior.get(t.file()),hashes.get(t.file())) || !persistedVectorIds.contains(id))
+                    vectorEntries.add(new VectorStore.Entry(id,"Repository "+name+" class "+t.name()+" method "+m.name()+"\n"+m.body()));
+            }
+            log.info("Repository vector indexing started: repository={} vectorEntries={} persistedVectorIds={} changedFiles={}",name,vectorEntries.size(),persistedVectorIds.size(),changed);
             long vectorStarted = System.nanoTime();
             vectors.upsertAll(vectorEntries);
             log.info("Repository vector indexing complete: repository={} vectorEntries={} elapsedMs={}", name,
