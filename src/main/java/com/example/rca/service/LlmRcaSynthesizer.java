@@ -96,6 +96,9 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
             if (unifiedDiff.isBlank()) {
                 log.warn("LLM patch proposal unavailable: model={} responseField={} proposalChars={} validation={}", modelName,
                         patchField, proposedDiff.length(), diffValidation.reason());
+                if (!proposedDiff.isBlank()) {
+                    unifiedDiff = repairPatch(context, evidenceAnalysis, proposedDiff, diffValidation.reason());
+                }
             } else {
                 log.info("LLM patch proposal accepted: model={} responseField={} patchChars={}", modelName, patchField, unifiedDiff.length());
             }
@@ -114,6 +117,44 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
             log.error("Mandatory LLM RCA synthesis failed: model={} elapsedMs={}", modelName,
                     (System.nanoTime() - startedAt) / 1_000_000, e);
             throw new IllegalStateException("Mandatory LLM RCA synthesis failed; no heuristic-only RCA was returned", e);
+        }
+    }
+
+    @Override
+    public String repairPatch(RcaContext context, RcaAnalysis evidenceAnalysis, String rejectedPatch, String gitDiagnostic) {
+        long startedAt = System.nanoTime();
+        try {
+            PromptContext promptContext = compactContext(context);
+            String repairInput = mapper.writeValueAsString(Map.of(
+                    "rootCause", Objects.toString(evidenceAnalysis.description(), ""),
+                    "fixRecommendation", Objects.toString(evidenceAnalysis.fixRecommendation(), ""),
+                    "rejectedPatch", Objects.toString(rejectedPatch, ""),
+                    "gitDiagnostic", Objects.toString(gitDiagnostic, ""),
+                    "evidence", promptContext.evidence()));
+            String prompt = "The proposed unified diff was rejected by `git apply --check`. Correct the patch using only the supplied source evidence. " +
+                    "Preserve the intended fix; do not invent files or source lines. Return the same RCA JSON shape with a corrected unifiedDiff. " +
+                    "Use valid git diff headers and exact context lines. If it cannot be repaired safely, return an empty unifiedDiff.\n" + repairInput;
+            log.info("LLM patch repair started: model={} rejectedPatchChars={} diagnosticChars={}", modelName,
+                    rejectedPatch == null ? 0 : rejectedPatch.length(), gitDiagnostic == null ? 0 : gitDiagnostic.length());
+            String response = chatClient.prompt().system(SYSTEM_PROMPT).user(prompt).call().content();
+            if (response == null || response.isBlank()) return "";
+            JsonNode out = mapper.readTree(extractJson(response));
+            String proposal = text(out, "unifiedDiff", "");
+            if (proposal.isBlank()) proposal = text(out, "suggestedPatch", "");
+            if (proposal.isBlank()) proposal = text(out, "patch", "");
+            DiffValidation validation = validateDiff(proposal, promptContext.evidence());
+            if (validation.diff().isBlank()) {
+                log.warn("LLM patch repair rejected: model={} validation={} proposalChars={} elapsedMs={}", modelName,
+                        validation.reason(), proposal.length(), (System.nanoTime() - startedAt) / 1_000_000);
+                return "";
+            }
+            log.info("LLM patch repair produced a structurally valid proposal: model={} patchChars={} elapsedMs={}", modelName,
+                    validation.diff().length(), (System.nanoTime() - startedAt) / 1_000_000);
+            return validation.diff();
+        } catch (Exception e) {
+            log.warn("LLM patch repair failed: model={} elapsedMs={}", modelName,
+                    (System.nanoTime() - startedAt) / 1_000_000, e);
+            return "";
         }
     }
 

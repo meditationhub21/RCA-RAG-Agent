@@ -55,7 +55,19 @@ public class RcaService {
         log.info("RCA context build elapsed: repository={} elapsedMs={}", repo, (System.nanoTime() - contextStarted) / 1_000_000);
         long synthesisStarted = System.nanoTime();
         RcaAnalysis synthesizedAnalysis = synthesizer.synthesize(context, reasoner.analyze(context));
-        String applicablePatch = validatePatch(snapshot.directory(), synthesizedAnalysis.unifiedDiff(), repo);
+        String applicablePatch = "";
+        String candidatePatch = synthesizedAnalysis.unifiedDiff();
+        for (int attempt = 1; attempt <= 2 && candidatePatch != null && !candidatePatch.isBlank(); attempt++) {
+            PatchCheck patchCheck = validatePatch(snapshot.directory(), candidatePatch, repo);
+            if (patchCheck.accepted()) {
+                applicablePatch = candidatePatch;
+                break;
+            }
+            log.warn("RCA patch rejected by Git: repository={} attempt={} diagnostic={}", repo, attempt, patchCheck.diagnostic());
+            if (attempt < 2) {
+                candidatePatch = synthesizer.repairPatch(context, synthesizedAnalysis, candidatePatch, patchCheck.diagnostic());
+            }
+        }
         RcaAnalysis analysis = Objects.equals(applicablePatch, synthesizedAnalysis.unifiedDiff())
                 ? synthesizedAnalysis
                 : new RcaAnalysis(synthesizedAnalysis.description(), synthesizedAnalysis.exceptionType(),
@@ -112,8 +124,8 @@ public class RcaService {
     }
 
     /** Only persist patches that Git itself can parse and apply to the synchronized repository. */
-    private String validatePatch(String repositoryDirectory, String patch, String repository) {
-        if (patch == null || patch.isBlank()) return "";
+    private PatchCheck validatePatch(String repositoryDirectory, String patch, String repository) {
+        if (patch == null || patch.isBlank()) return new PatchCheck(false, "No patch proposal was supplied.");
         Path patchFile = null;
         Path outputFile = null;
         try {
@@ -127,28 +139,30 @@ public class RcaService {
             if (!process.waitFor(30, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 log.warn("RCA patch Git validation timed out: repository={}", repository);
-                return "";
+                return new PatchCheck(false, "git apply --check timed out after 30 seconds");
             }
             String output = Files.readString(outputFile, StandardCharsets.UTF_8).strip();
             if (process.exitValue() != 0) {
                 log.warn("RCA patch rejected by git apply --check: repository={} exitCode={} output={}",
                         repository, process.exitValue(), output);
-                return "";
+                return new PatchCheck(false, output.isBlank() ? "git apply --check exited with " + process.exitValue() : output);
             }
             log.info("RCA patch passed git apply --check: repository={} patchChars={}", repository, patch.length());
-            return patch;
+            return new PatchCheck(true, "");
         } catch (IOException e) {
             log.warn("Could not validate RCA patch with Git; omitting patch: repository={} reason={}", repository, e.getMessage());
-            return "";
+            return new PatchCheck(false, Objects.toString(e.getMessage(), "Could not run git apply --check"));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("RCA patch Git validation was interrupted; omitting patch: repository={}", repository);
-            return "";
+            return new PatchCheck(false, "git apply --check was interrupted");
         } finally {
             if (patchFile != null) try { Files.deleteIfExists(patchFile); } catch (IOException ignored) {}
             if (outputFile != null) try { Files.deleteIfExists(outputFile); } catch (IOException ignored) {}
         }
     }
+
+    private record PatchCheck(boolean accepted, String diagnostic) {}
 
     private record Incident(String id, String repository, String rootCause, String resolution, String summary) {}
 }

@@ -7,4 +7,9 @@ import com.example.rca.model.RcaContext;
 @FunctionalInterface
 public interface RcaSynthesizer {
     RcaAnalysis synthesize(RcaContext context, RcaAnalysis evidenceAnalysis);
+
+    /** Repair a Git-rejected proposal using its diagnostic; non-LLM synthesizers may decline. */
+    default String repairPatch(RcaContext context, RcaAnalysis evidenceAnalysis, String rejectedPatch, String gitDiagnostic) {
+        return "";
+    }
 }
