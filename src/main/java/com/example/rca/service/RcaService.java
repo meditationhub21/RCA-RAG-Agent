@@ -54,14 +54,16 @@ public class RcaService {
                 context.currentCommit(), context.location(), context.evidence().size(), context.evidenceQuality());
         log.info("RCA context build elapsed: repository={} elapsedMs={}", repo, (System.nanoTime() - contextStarted) / 1_000_000);
         long synthesisStarted = System.nanoTime();
-        RcaAnalysis analysis = synthesizer.synthesize(context, reasoner.analyze(context));
-        String applicablePatch = validatePatch(snapshot.directory(), analysis.unifiedDiff(), repo);
-        if (!Objects.equals(applicablePatch, analysis.unifiedDiff())) {
-            analysis = new RcaAnalysis(analysis.description(), analysis.exceptionType(), analysis.suspectedExpression(),
-                    analysis.variable(), analysis.reasoning(), analysis.evidenceIds(), analysis.fixRecommendation(),
-                    analysis.confidence(), analysis.missingInformation(), analysis.nextInvestigation(),
-                    analysis.likelyIntroducingCommit(), applicablePatch);
-        }
+        RcaAnalysis synthesizedAnalysis = synthesizer.synthesize(context, reasoner.analyze(context));
+        String applicablePatch = validatePatch(snapshot.directory(), synthesizedAnalysis.unifiedDiff(), repo);
+        RcaAnalysis analysis = Objects.equals(applicablePatch, synthesizedAnalysis.unifiedDiff())
+                ? synthesizedAnalysis
+                : new RcaAnalysis(synthesizedAnalysis.description(), synthesizedAnalysis.exceptionType(),
+                        synthesizedAnalysis.suspectedExpression(), synthesizedAnalysis.variable(),
+                        synthesizedAnalysis.reasoning(), synthesizedAnalysis.evidenceIds(),
+                        synthesizedAnalysis.fixRecommendation(), synthesizedAnalysis.confidence(),
+                        synthesizedAnalysis.missingInformation(), synthesizedAnalysis.nextInvestigation(),
+                        synthesizedAnalysis.likelyIntroducingCommit(), applicablePatch);
         log.info("RCA synthesis stage complete: repository={} elapsedMs={}", repo,
                 (System.nanoTime() - synthesisStarted) / 1_000_000);
         List<Evidence> responseEvidence = context.evidence().stream()
