@@ -73,7 +73,13 @@ public class RemediationWorkflowService {
             try {
                 run(root, check, Duration.ofSeconds(30));
             } catch (IllegalStateException e) {
-                throw new IllegalArgumentException("The stored LLM patch is malformed or does not match the current repository. No branch was created; rerun /rca after syncing the repository.", e);
+                String gitDiagnostic = tail(Objects.toString(e.getMessage(), ""));
+                log.warn("RCA patch failed git apply check: repository={} caseId={} gitOutput=\n{}",
+                        request.repositoryName(), request.caseId(), gitDiagnostic);
+                throw new IllegalArgumentException(
+                        "The stored RCA patch could not be applied to the current repository. Git output:\n" +
+                                gitDiagnostic +
+                                "\nNo branch was created. Sync the repository and create a fresh RCA case before retrying.", e);
             }
             run(root, List.of("git", "switch", "-c", branch), Duration.ofSeconds(30));
             run(root, apply, Duration.ofSeconds(30));
