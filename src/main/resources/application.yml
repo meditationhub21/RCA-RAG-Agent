@@ -14,7 +14,8 @@ spring:
         format: json
         keep-alive: 30m
         temperature: 0.1
-        num-ctx: 4096
+        think: false
+        num-ctx: 8192
         num-predict: 1024
       embedding:
         model: ${OLLAMA_EMBEDDING_MODEL:rca-nomic-embed-v1.5}

@@ -17,6 +17,10 @@ public interface GraphStore extends AutoCloseable {
     default MethodContext methodContext(String repository,String className,String method) {
         return new MethodContext(className,null,null,List.of(),List.of(),List.of(),List.of(),List.of(),List.of());
     }
+    /** Return a bounded structural node-link view, excluding source and incident text. */
+    default GraphSnapshot graph(String repository, int nodeLimit, int relationshipLimit) {
+        return new GraphSnapshot(repository, List.of(), List.of(), false);
+    }
     default void storeIncident(String repository, String caseId, String error, String affectedFile,
                                String affectedClass, String affectedMethod, String rootCause,
                                String evidence, String resolution, double confidence, String proposedPatch) {}
@@ -27,4 +31,11 @@ public interface GraphStore extends AutoCloseable {
                          List<String> dependencies,List<String> exceptions,List<String> relatedTests,
                          List<String> relatedCommits) {}
     record StoredIncident(String caseId,String rootCause,String resolution) {}
+    record GraphSnapshot(String repository, List<GraphNode> nodes, List<GraphRelationship> relationships, boolean truncated) {
+        public GraphSnapshot { nodes = List.copyOf(nodes); relationships = List.copyOf(relationships); }
+    }
+    record GraphNode(String id, List<String> labels, Map<String,Object> properties) {
+        public GraphNode { labels = List.copyOf(labels); properties = Map.copyOf(properties); }
+    }
+    record GraphRelationship(String id, String source, String type, String target) {}
 }

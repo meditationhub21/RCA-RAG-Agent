@@ -165,5 +165,46 @@ public class Neo4jGraphStore implements GraphStore {
             return session.run(query,params).list(r->new StoredIncident(r.get("id").asString(),r.get("cause").asString(""),r.get("resolution").asString("")));
         }
     }
+    @Override public GraphSnapshot graph(String repository, int nodeLimit, int relationshipLimit) {
+        if (driver == null) return new GraphSnapshot(repository, List.of(), List.of(), false);
+        try (var session = driver.session()) {
+            var nodeRows = session.run(
+                    "MATCH (n) WHERE n.repository=$repo OR ((n:Repository OR n:Application) AND n.name=$repo) " +
+                    "RETURN elementId(n) AS id,labels(n) AS labels,properties(n) AS properties " +
+                    "ORDER BY id LIMIT $limit",
+                    Map.of("repo", repository, "limit", nodeLimit + 1)).list();
+            boolean truncated = nodeRows.size() > nodeLimit;
+            var selectedNodes = nodeRows.stream().limit(nodeLimit).toList();
+            var nodes = new ArrayList<GraphNode>();
+            var nodeIds = new ArrayList<String>();
+            Set<String> allowedProperties = Set.of("name", "repository", "path", "file", "line", "signature",
+                    "owner", "package", "kind", "hash", "commit", "confidence", "caseId");
+            for (var row : selectedNodes) {
+                String id = row.get("id").asString();
+                nodeIds.add(id);
+                var labels = row.get("labels").asList(Value::asString);
+                var raw = row.get("properties").asMap();
+                var properties = new LinkedHashMap<String, Object>();
+                for (String key : allowedProperties) {
+                    Object value = raw.get(key);
+                    if (value instanceof String || value instanceof Number || value instanceof Boolean) properties.put(key, value);
+                }
+                nodes.add(new GraphNode(id, labels, properties));
+            }
+            if (nodeIds.isEmpty()) return new GraphSnapshot(repository, nodes, List.of(), truncated);
+            var edgeRows = session.run(
+                    "MATCH (a)-[r]->(b) WHERE elementId(a) IN $nodeIds AND elementId(b) IN $nodeIds " +
+                    "RETURN elementId(r) AS id,elementId(a) AS source,type(r) AS type,elementId(b) AS target " +
+                    "ORDER BY source,type,target LIMIT $limit",
+                    Map.of("nodeIds", nodeIds, "limit", relationshipLimit + 1)).list();
+            if (edgeRows.size() > relationshipLimit) truncated = true;
+            var relationships = edgeRows.stream().limit(relationshipLimit)
+                    .map(row -> new GraphRelationship(row.get("id").asString(), row.get("source").asString(),
+                            row.get("type").asString(), row.get("target").asString()))
+                    .toList();
+            return new GraphSnapshot(repository, nodes, relationships, truncated);
+        }
+    }
+
     @Override public void close(){if(driver!=null) driver.close();}
 }

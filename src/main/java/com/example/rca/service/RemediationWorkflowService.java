@@ -4,6 +4,8 @@ import com.example.rca.model.ApiModels.RemediationRequest;
 import com.example.rca.model.ApiModels.RemediationPublishRequest;
 import com.example.rca.model.ApiModels.RemediationResponse;
 import com.example.rca.model.CodeModels;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -23,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 /** Human-triggered verification of the source-grounded patch proposed for an RCA case. */
 @Service
 public class RemediationWorkflowService {
+    private static final Logger log = LoggerFactory.getLogger(RemediationWorkflowService.class);
     private static final Duration BUILD_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter BRANCH_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC);
     private final RepositorySyncService repositories;
@@ -62,13 +65,28 @@ public class RemediationWorkflowService {
         try {
             patchFile = Files.createTempFile("rca-remediation-", ".patch");
             Files.writeString(patchFile, unifiedDiff, StandardCharsets.UTF_8);
+            List<String> applyBase = List.of("git", "apply", "--recount", "--ignore-whitespace", "--whitespace=nowarn");
+            var check = new ArrayList<>(applyBase);
+            check.addAll(List.of("--check", "--", patchFile.toString()));
+            var apply = new ArrayList<>(applyBase);
+            apply.addAll(List.of("--", patchFile.toString()));
             try {
-                run(root, List.of("git", "apply", "--check", "--", patchFile.toString()), Duration.ofSeconds(30));
+                run(root, check, Duration.ofSeconds(30));
             } catch (IllegalStateException e) {
                 throw new IllegalArgumentException("The stored LLM patch is malformed or does not match the current repository. No branch was created; rerun /rca after syncing the repository.", e);
             }
             run(root, List.of("git", "switch", "-c", branch), Duration.ofSeconds(30));
-            run(root, List.of("git", "apply", "--", patchFile.toString()), Duration.ofSeconds(30));
+            run(root, apply, Duration.ofSeconds(30));
+
+            List<String> format = formatCommand(root);
+            if (format != null) {
+                try {
+                    run(root, format, Duration.ofMinutes(10));
+                } catch (IllegalStateException e) {
+                    return new RemediationResponse(request.repositoryName(), "VERIFICATION_FAILED", branch, null,
+                            "Auto-format failed:\n" + tail(e.getMessage()), null);
+                }
+            }
 
             ProcessResult result;
             try {
@@ -142,6 +160,20 @@ public class RemediationWorkflowService {
         if (!status.isEmpty()) throw new IllegalStateException("Repository has uncommitted changes; commit or stash them before applying remediation");
     }
 
+    private static List<String> formatCommand(Path root) {
+        Path pom = root.resolve("pom.xml");
+        if (!Files.isRegularFile(pom)) return null;
+        try {
+            if (!Files.readString(pom, StandardCharsets.UTF_8).contains("spring-javaformat-maven-plugin")) return null;
+        } catch (IOException e) {
+            log.warn("Could not inspect Maven formatter configuration at {}", pom, e);
+            return null;
+        }
+        if (Files.exists(root.resolve("mvnw.cmd"))) return List.of("cmd", "/c", "mvnw.cmd", "-B", "spring-javaformat:apply");
+        if (Files.exists(root.resolve("mvnw"))) return List.of("./mvnw", "-B", "spring-javaformat:apply");
+        return List.of("mvn", "-B", "spring-javaformat:apply");
+    }
+
     private static List<String> verificationCommand(Path root) {
         if (Files.exists(root.resolve("mvnw.cmd"))) return List.of("cmd", "/c", "mvnw.cmd", "-B", "verify");
         if (Files.exists(root.resolve("mvnw"))) return List.of("./mvnw", "-B", "verify");
@@ -168,22 +200,40 @@ public class RemediationWorkflowService {
 
     private static ProcessResult run(Path directory, List<String> command, Duration timeout) {
         Path outputFile = null;
+        long started = System.nanoTime();
+        String commandSummary = String.join(" ", command.stream().limit(3).toList());
+        log.info("Starting remediation command: directory={} command={} timeoutSeconds={}", directory,
+                commandSummary, timeout.toSeconds());
         try {
             outputFile = Files.createTempFile("rca-workflow-", ".log");
             Process process = new ProcessBuilder(new ArrayList<>(command)).directory(directory.toFile())
                     .redirectErrorStream(true).redirectOutput(outputFile.toFile()).start();
             if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
+                long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+                log.error("Remediation command timed out: command={} elapsedMs={} timeoutSeconds={}",
+                        commandSummary, elapsedMs, timeout.toSeconds());
                 throw new IllegalStateException("Command timed out after " + timeout.toMinutes() + " minutes: " + command.getFirst());
             }
             String output = Files.readString(outputFile, StandardCharsets.UTF_8);
-            if (process.exitValue() != 0) throw new IllegalStateException("Command failed (" + process.exitValue() + "): " +
-                    command.getFirst() + "\n" + tail(output));
+            long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+            log.info("Remediation command completed: command={} exitCode={} elapsedMs={}",
+                    commandSummary, process.exitValue(), elapsedMs);
+            if (process.exitValue() != 0) {
+                String outputTail = tail(output);
+                log.warn("Remediation command failed: command={} exitCode={} outputTail=\n{}",
+                        commandSummary, process.exitValue(), outputTail);
+                throw new IllegalStateException("Command failed (" + process.exitValue() + "): " +
+                        command.getFirst() + "\n" + outputTail);
+            }
             return new ProcessResult(process.exitValue(), output);
         } catch (IOException e) {
+            log.error("Could not start or read remediation command output: command={} directory={}", commandSummary, directory, e);
             throw new IllegalStateException("Could not run " + command.getFirst() + "; verify that the required tool is installed", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Interrupted while running remediation command: command={} elapsedMs={}", commandSummary,
+                    (System.nanoTime() - started) / 1_000_000);
             throw new IllegalStateException("Interrupted while running " + command.getFirst(), e);
         } finally {
             if (outputFile != null) try { Files.deleteIfExists(outputFile); } catch (IOException ignored) {}
