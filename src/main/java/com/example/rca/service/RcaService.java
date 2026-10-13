@@ -8,8 +8,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
@@ -50,6 +55,13 @@ public class RcaService {
         log.info("RCA context build elapsed: repository={} elapsedMs={}", repo, (System.nanoTime() - contextStarted) / 1_000_000);
         long synthesisStarted = System.nanoTime();
         RcaAnalysis analysis = synthesizer.synthesize(context, reasoner.analyze(context));
+        String applicablePatch = validatePatch(snapshot.directory(), analysis.unifiedDiff(), repo);
+        if (!Objects.equals(applicablePatch, analysis.unifiedDiff())) {
+            analysis = new RcaAnalysis(analysis.description(), analysis.exceptionType(), analysis.suspectedExpression(),
+                    analysis.variable(), analysis.reasoning(), analysis.evidenceIds(), analysis.fixRecommendation(),
+                    analysis.confidence(), analysis.missingInformation(), analysis.nextInvestigation(),
+                    analysis.likelyIntroducingCommit(), applicablePatch);
+        }
         log.info("RCA synthesis stage complete: repository={} elapsedMs={}", repo,
                 (System.nanoTime() - synthesisStarted) / 1_000_000);
         List<Evidence> responseEvidence = context.evidence().stream()
@@ -95,6 +107,45 @@ public class RcaService {
         return new RcaResponse(repo, caseId, root, responseEvidence, analysis.fixRecommendation(), analysis.confidence(), similar,
                 limitation, analysis.reasoning(), analysis.missingInformation(), analysis.nextInvestigation(),
                 analysis.likelyIntroducingCommit(), analysis.unifiedDiff());
+    }
+
+    /** Only persist patches that Git itself can parse and apply to the synchronized repository. */
+    private String validatePatch(String repositoryDirectory, String patch, String repository) {
+        if (patch == null || patch.isBlank()) return "";
+        Path patchFile = null;
+        Path outputFile = null;
+        try {
+            patchFile = Files.createTempFile("rca-patch-check-", ".patch");
+            outputFile = Files.createTempFile("rca-patch-check-", ".log");
+            Files.writeString(patchFile, patch, StandardCharsets.UTF_8);
+            Process process = new ProcessBuilder("git", "apply", "--recount", "--check", "--ignore-whitespace",
+                    "--whitespace=nowarn", "--", patchFile.toString())
+                    .directory(Path.of(repositoryDirectory).toAbsolutePath().normalize().toFile())
+                    .redirectErrorStream(true).redirectOutput(outputFile.toFile()).start();
+            if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                log.warn("RCA patch Git validation timed out: repository={}", repository);
+                return "";
+            }
+            String output = Files.readString(outputFile, StandardCharsets.UTF_8).strip();
+            if (process.exitValue() != 0) {
+                log.warn("RCA patch rejected by git apply --check: repository={} exitCode={} output={}",
+                        repository, process.exitValue(), output);
+                return "";
+            }
+            log.info("RCA patch passed git apply --check: repository={} patchChars={}", repository, patch.length());
+            return patch;
+        } catch (IOException e) {
+            log.warn("Could not validate RCA patch with Git; omitting patch: repository={} reason={}", repository, e.getMessage());
+            return "";
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("RCA patch Git validation was interrupted; omitting patch: repository={}", repository);
+            return "";
+        } finally {
+            if (patchFile != null) try { Files.deleteIfExists(patchFile); } catch (IOException ignored) {}
+            if (outputFile != null) try { Files.deleteIfExists(outputFile); } catch (IOException ignored) {}
+        }
     }
 
     private record Incident(String id, String repository, String rootCause, String resolution, String summary) {}

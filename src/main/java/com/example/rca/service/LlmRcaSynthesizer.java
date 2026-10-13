@@ -212,7 +212,12 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
             for (; bodyEnd < lines.length; bodyEnd++) {
                 String bodyLine = lines[bodyEnd];
                 if (bodyLine.startsWith("@@ ") || bodyLine.startsWith("diff --git ")) break;
-                if (bodyLine.startsWith("\\")) continue;
+                if (bodyLine.startsWith("\\")) {
+                    boolean followsDiffLine = bodyEnd > i + 1 &&
+                            (lines[bodyEnd - 1].startsWith(" ") || lines[bodyEnd - 1].startsWith("+") || lines[bodyEnd - 1].startsWith("-"));
+                    if (!"\\ No newline at end of file".equals(bodyLine) || !followsDiffLine) return null;
+                    continue;
+                }
                 if (bodyLine.startsWith(" ")) { oldCount++; newCount++; }
                 else if (bodyLine.startsWith("-")) oldCount++;
                 else if (bodyLine.startsWith("+")) newCount++;
@@ -231,6 +236,7 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
         int oldExpected = -1, newExpected = -1, oldSeen = 0, newSeen = 0;
         boolean foundHunk = false;
         var hunkHeader = java.util.regex.Pattern.compile("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@(?:.*)$");
+        String previousLine = null;
         for (String line : diff.lines().toList()) {
             if (line.startsWith("@@ ")) {
                 if (foundHunk && (oldSeen != oldExpected || newSeen != newExpected)) return false;
@@ -243,12 +249,19 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
                 foundHunk = true;
             } else if (foundHunk) {
                 if (line.startsWith("diff --git ")) break;
-                if (line.startsWith("\\")) continue;
+                if (line.startsWith("\\")) {
+                    boolean followsDiffLine = previousLine != null && (previousLine.startsWith(" ") ||
+                            previousLine.startsWith("+") || previousLine.startsWith("-"));
+                    if (!"\\ No newline at end of file".equals(line) || !followsDiffLine) return false;
+                    previousLine = line;
+                    continue;
+                }
                 if (line.startsWith(" ")) { oldSeen++; newSeen++; }
                 else if (line.startsWith("-")) oldSeen++;
                 else if (line.startsWith("+")) newSeen++;
                 else return false;
             }
+            previousLine = line;
         }
         return foundHunk && oldSeen == oldExpected && newSeen == newExpected;
     }

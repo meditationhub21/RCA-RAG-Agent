@@ -49,7 +49,7 @@ public class RemediationWorkflowService {
         String unifiedDiff = graph.incidentPatch(request.repositoryName(), request.caseId())
                 .orElseThrow(() -> new IllegalArgumentException("This RCA case has no safe, source-grounded patch proposal. Review its fixRecommendation and provide the missing evidence before requesting remediation."));
         unifiedDiff = LlmRcaSynthesizer.normalizeHunkCounts(unifiedDiff);
-        if (unifiedDiff == null)
+        if (unifiedDiff == null || !LlmRcaSynthesizer.hasValidHunks(unifiedDiff))
             throw new IllegalArgumentException("The stored RCA patch is malformed. Rerun /rca with the latest application build to generate a valid proposal.");
 
         CodeModels.RepositorySnapshot snapshot = repositories.latest(request.repositoryName())
