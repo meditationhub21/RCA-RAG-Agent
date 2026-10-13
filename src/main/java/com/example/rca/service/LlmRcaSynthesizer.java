@@ -217,6 +217,25 @@ public class LlmRcaSynthesizer implements RcaSynthesizer {
             return new DiffValidation("", "file headers do not match the evidenced source path");
         if (diff.contains("GIT binary patch") || diff.contains("new file mode") || diff.contains("deleted file mode"))
             return new DiffValidation("", "binary, new-file, or delete patches are not accepted");
+        var canonicalLines = new ArrayList<String>();
+        canonicalLines.add(lines.getFirst());
+        canonicalLines.add(lines.get(oldFileHeader));
+        canonicalLines.add(lines.get(newFileHeader));
+        boolean foundHunk = false;
+        for (int i = newFileHeader + 1; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (line.startsWith("@@ ")) foundHunk = true;
+            if (!foundHunk) {
+                // The model's optional index metadata is not needed by git apply. Strip it;
+                // reject any other free-form preamble instead of storing a corrupt patch.
+                if (line.isBlank() || line.startsWith("index ")) continue;
+                return new DiffValidation("", "unexpected metadata before the first unified-diff hunk");
+            }
+            canonicalLines.add(line);
+        }
+        if (!foundHunk) return new DiffValidation("", "unified diff contains no hunk");
+        diff = normalizeHunkCounts(String.join("\n", canonicalLines));
+        if (diff == null) return new DiffValidation("", "malformed unified diff hunk");
         if (!hasValidHunks(diff)) return new DiffValidation("", "unified diff hunk counts or lines are invalid");
         return new DiffValidation(diff.strip(), "accepted");
     }
