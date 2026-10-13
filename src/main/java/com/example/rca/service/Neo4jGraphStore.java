@@ -182,14 +182,14 @@ public class Neo4jGraphStore implements GraphStore {
             for (var row : selectedNodes) {
                 String id = row.get("id").asString();
                 nodeIds.add(id);
-                var labels = row.get("labels").asList(Value::asString);
+                List<String> labels = row.get("labels").asList(value -> value.asString());
                 var raw = row.get("properties").asMap();
                 var properties = new LinkedHashMap<String, Object>();
                 for (String key : allowedProperties) {
                     Object value = raw.get(key);
                     if (value instanceof String || value instanceof Number || value instanceof Boolean) properties.put(key, value);
                 }
-                nodes.add(new GraphNode(id, labels, properties));
+                nodes.add(new GraphStore.GraphNode(id, labels, properties));
             }
             if (nodeIds.isEmpty()) return new GraphSnapshot(repository, nodes, List.of(), truncated);
             var edgeRows = session.run(
